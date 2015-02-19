@@ -1,0 +1,70 @@
+#!/bin/sh
+#
+# Unpack utility using sfmf that can be used by sailfish-snapshot
+# Copyright (C) 2015 Jolla Ltd.
+# Contact: Thomas Perl <thomas.perl@jolla.com>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2 as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+
+
+set -e
+
+usage() {
+    cat <<EOF
+
+    Usage: $0 @|@home [localdir1] [localdir2] ...
+
+       $0 @ ........ Deploy the rootfs to the current directory
+       $0 @home .... Deploy the homefs to the current directory
+
+       Additional arguments are used to find files to reflink.
+
+    Deploys the factory image for the current OS release
+
+EOF
+}
+
+if [ $# -lt 1 ]; then
+    usage
+    exit 1
+fi
+
+TARGET="$1"
+shift
+
+OUTPUTDIR="."
+SFMF_UNPACK="sfmf-unpack --verbose --progress"
+MANIFEST_URL="$(env SSU_SLIPSTREAM_PARTITION="$TARGET" ssuslipstream)"
+
+if [ "$MANIFEST_URL" = "" ]; then
+    echo "Could not get update URL information for factory image."
+    exit 1
+fi
+
+MANIFEST_URL="${MANIFEST_URL}/manifest.sfmf"
+
+case $TARGET in
+    @)
+        exec $SFMF_UNPACK "$MANIFEST_URL" "$OUTPUTDIR" "$@"
+        ;;
+    @home)
+        exec $SFMF_UNPACK "$MANIFEST_URL" "$OUTPUTDIR" "$@"
+        ;;
+    *)
+        usage
+        echo "Error: Invalid target: $TARGET"
+        exit 1
+        ;;
+esac

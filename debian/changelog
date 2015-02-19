@@ -1,0 +1,6 @@
+sfmf (0.0.7) unstable; urgency=medium
+
+  * [upgrade] Remove old factory snapshot if needed
+  * [license] Apply GPLv2, update readme file
+
+ -- Thomas Perl <m@thp.io>  Thu, 19 Feb 2015 16:22:25 +0100

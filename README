@@ -1,0 +1,35 @@
+Sailfish OS Factory Snapshot Update
+===================================
+
+This is a collection of tools that can turn an extracted factory image
+directory tree into a SFMF archive file that is optimized for re-using
+existing binary blobs on a device to minimize download bandwidth while
+still being able to restore the snapshot even in case blobs have been
+modified in the live system (this also allows full recovery from an
+empty partition, if this is needed).
+
+
+Dependencies on the host (for create-tarball.py):
+
+ - Root permissions (for loop-mounting the btrfs image)
+ - Python 2.7
+ - Kernel with btrfs support + btrfs utilities installed
+ - simg2img from Android
+
+
+Building a factory image from a release tarball
+-----------------------------------------------
+
+    sfmf-convert <release tarball> out/
+
+
+Dependencies on the device:
+
+ - ssu-slipstream (https://github.com/nemomobile/ssu)
+ - sailfish-snapshot >= 1.0.4 (https://github.com/sailfishos/sailfish-snapshot)
+
+
+Deploying a new factory snapshot to the device
+----------------------------------------------
+
+    sfmf-upgrade-factory-snapshot

@@ -1,0 +1,91 @@
+#!/bin/sh
+#
+# Convert a release tarball to a pair of SFMF directory trees
+# Copyright (C) 2015 Jolla Ltd.
+# Contact: Thomas Perl <thomas.perl@jolla.com>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2 as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+
+# Adjustable parameters for the pack utility
+PAYLOAD_SIZE=10000
+MAX_PACK_SIZE=1000
+AVG_PACK_SIZE=5000
+
+set -e
+
+if [ $# -ne 2 ]; then
+    echo "Usage: $0 <release-tarball.tar.bz2> <outdir>"
+    exit 1
+fi
+
+TARBALL=$1
+OUTDIR=$2
+BASENAME=$(basename "$TARBALL" .tar.bz2)
+
+if [ -z "$TARBALL" -o -z "$OUTDIR" -o -z "$BASENAME" ]; then
+    echo "Tarball, outdir and basename must not be empty."
+    exit 1
+fi
+
+METAFILE="$OUTDIR/${BASENAME}-metadata.txt"
+
+REQUIRED_COMMANDS="
+sfmf-create-tarball
+sfmf-pack
+sudo
+tar
+tee
+"
+
+for required_command in $REQUIRED_COMMANDS; do
+    if ! which "$required_command" >/dev/null 2>&1; then
+        echo "Required command not found: $required_command"
+        exit 1
+    fi
+done
+
+# Extract the tarball
+sfmf-create-tarball "$TARBALL" "$OUTDIR"
+
+for name in "rootfs-slipstream-${BASENAME}" "homefs-slipstream-${BASENAME}"; do
+    # Metadata file that will be embedded in the SFMF file
+    rm -f "$METAFILE"
+    cat <<EOF >$METAFILE
+NAME=$name
+SOURCE=$TARBALL
+BUILD_DATE=$(date -R)
+EOF
+
+    OUTDIR_name="${OUTDIR:?}/${name:?}"
+    OUTDIR_name_tar_bz2="${OUTDIR_name:?}.tar.bz2"
+    OUTDIR_name_extracted="${OUTDIR_name:?}.extracted"
+    OUTDIR_name_logfile="${OUTDIR_name:?}.txt"
+
+    # Extract tarball
+    sudo rm -rf "$OUTDIR_name_extracted"
+    mkdir -p "$OUTDIR_name_extracted"
+    sudo tar -xvpf "$OUTDIR_name_tar_bz2" -C "${OUTDIR_name_extracted}"
+
+    # Build manifest file
+    sudo rm -rf "$OUTDIR_name"
+    mkdir -p "$OUTDIR_name"
+    sudo sfmf-pack "$OUTDIR_name_extracted" "$OUTDIR_name" \
+        "$METAFILE" "$PAYLOAD_SIZE" "$MAX_PACK_SIZE" "$AVG_PACK_SIZE" 2>&1 | tee "$OUTDIR_name_logfile"
+
+    # Cleanup
+    sudo rm -rf "$OUTDIR_name_extracted"
+    sudo rm -f "$OUTDIR_name_tar_bz2"
+    rm -f "$METAFILE"
+done

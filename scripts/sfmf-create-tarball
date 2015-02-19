@@ -1,0 +1,139 @@
+#!/usr/bin/python
+#
+# Create OS Update Slipstream Tarball from Sailfish OS Release Image
+# Copyright (C) 2015 Jolla Ltd.
+# Contact: Thomas Perl <thomas.perl@jolla.com>
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2 as
+# published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along
+# with this program; if not, write to the Free Software Foundation, Inc.,
+# 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#
+
+import subprocess
+import os
+import sys
+import shutil
+import glob
+
+SIMG2IMG = 'simg2img'
+IMG_SUFFIX = '.tar.bz2'
+BTRFS_SUFFIX = '.btrfs'
+TAR_CREATE_OPTIONS = ['--create', '--bzip2', '--atime-preserve',
+    '--numeric-owner', '--preserve-permissions',
+    '--acls', '--xattrs', '--one-file-system']
+
+
+def sh(args):
+    print('Running: {}'.format(' '.join(str(a) for a in args)))
+    assert subprocess.call(args) == 0, 'Command failed: %r' % (args,)
+
+def ensure_dir(dirname):
+    if os.path.isdir(dirname):
+        return
+
+    print('Creating: {}'.format(dirname))
+    os.makedirs(dirname)
+
+def clean_dir(dirname):
+    if not os.path.exists(dirname):
+        return
+
+    print('Removing: {}'.format(dirname))
+    shutil.rmtree(dirname)
+
+def clean_file(filename):
+    if not os.path.isfile(filename):
+        return
+
+    print('Removing: {}'.format(filename))
+    os.unlink(filename)
+
+
+def extract(cleanup, image_file, tmp_dir):
+    assert image_file.endswith(IMG_SUFFIX), 'Unexpected filename suffix'
+    directory = os.path.basename(image_file)[:-len(IMG_SUFFIX)]
+    image_dir = os.path.join(tmp_dir, directory)
+    tmp_mnt = os.path.join(tmp_dir, 'mnt')
+    rootfs_source = os.path.join(tmp_mnt, '@')
+    homefs_source = os.path.join(tmp_mnt, '@home')
+    btrfs_loop = os.path.join(tmp_dir, directory + BTRFS_SUFFIX)
+    rootfs_tarball = os.path.join(tmp_dir, 'rootfs-slipstream-{}{}'.format(directory, IMG_SUFFIX))
+    homefs_tarball = os.path.join(tmp_dir, 'homefs-slipstream-{}{}'.format(directory, IMG_SUFFIX))
+
+    print """
+    Image file: {image_file}
+    Temp directory: {tmp_dir}
+    Directory: {directory}
+    Root FS to: {rootfs_tarball}
+    Home FS to: {homefs_tarball}
+    """.format(**locals())
+
+    ensure_dir(tmp_dir)
+    clean_dir(image_dir)
+
+    # Extract the image
+    sh(['tar', '-xjvf', image_file, '-C', tmp_dir])
+    cleanup.append(lambda: clean_dir(image_dir))
+
+    assert os.path.isdir(image_dir), 'Expected directory not found in tarball'
+
+    image_parts = sorted(glob.glob(os.path.join(image_dir, 'sailfish.img???')))
+
+    assert len(image_parts) > 0, 'Image parts not found'
+
+    # Create the loopback image
+    sh([SIMG2IMG] + image_parts + [btrfs_loop])
+    cleanup.append(lambda: clean_file(btrfs_loop))
+
+    print 'btrfs filesystem now in:', btrfs_loop
+
+    # Mount the loopback image
+    ensure_dir(tmp_mnt)
+    cleanup.append(lambda: clean_dir(tmp_mnt))
+    sh(['sudo', 'mount', '-o', 'loop,subvolid=0', '-t', 'btrfs', btrfs_loop, tmp_mnt])
+    cleanup.append(lambda: sh(['sudo', 'umount', tmp_mnt]))
+
+    # Create the tarballs containing the slipstream filesystems
+    clean_file(rootfs_tarball)
+    sh(['sudo', 'tar', '-f', rootfs_tarball, '-C', rootfs_source, '.'] + TAR_CREATE_OPTIONS)
+    sh(['sudo', 'chown', '%d:%d' % (os.getuid(), os.getgid()), rootfs_tarball])
+
+    clean_file(homefs_tarball)
+    sh(['sudo', 'tar', '-f', homefs_tarball, '-C', homefs_source, '.'] + TAR_CREATE_OPTIONS)
+    sh(['sudo', 'chown', '%d:%d' % (os.getuid(), os.getgid()), homefs_tarball])
+
+
+def with_cleanup(func, *args):
+    # Stack of cleanup operations
+    cleanup = []
+
+    try:
+        func(cleanup, *args)
+    finally:
+        print('== CLEANUP ==')
+        for operation in reversed(cleanup):
+            try:
+                operation()
+            except Exception as e:
+                print 'Got exception during cleanup:', e, '(continuing)'
+
+
+if __name__ == '__main__':
+    if len(sys.argv) != 3:
+        print >>sys.stderr, """
+        Usage: {} /path/to/SailfishOS-image{} /path/to/tmpdir
+        """.format(sys.argv[0], IMG_SUFFIX)
+        sys.exit(1)
+
+    image_file, tmp_dir, = sys.argv[1:]
+    with_cleanup(extract, image_file, tmp_dir)
+

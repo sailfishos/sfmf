@@ -1,0 +1,155 @@
+#!/bin/sh
+# Generate a directory with random files and pack, then unpack
+
+set -e
+set -x
+
+HERE=$(pwd)
+SFMF_PACK=$HERE/../sfmf-pack
+SFMF_UNPACK=$HERE/../sfmf-unpack
+
+check_is_hardlink() {
+    FILE1="$1"
+    FILE2="$2"
+    if ! test $(stat -c '%i' "$FILE1") = $(stat -c '%i' "$FILE2"); then
+        echo "Files are not hardlinks: $FILE1 <-> $FILE2"
+        return 1
+    fi
+
+    return 0
+}
+
+check_is_symlink() {
+    FILE="$1"
+    TARGET="$2"
+    if ! test $(readlink "$FILE") = "$TARGET"; then
+        echo "Not a symlink or pointing somewhere wrong: $FILE (expected $TARGET)"
+        return 1
+    fi
+
+    return 0
+}
+
+verify_unpack() {
+    OUTPUT="$1"
+    # The output directory must have the same contents as the input directory
+    diff -ru input "$OUTPUT" || return 1
+
+    # The "hardlink" file must be a hardlink to the "20megs" file
+    check_is_hardlink "$OUTPUT/20megs" "$OUTPUT/hardlink" || return 1
+    check_is_symlink "$OUTPUT/symlink" "20megs" || return 1
+}
+
+rm -rf tmp
+mkdir tmp
+cd tmp
+
+rm -rf input
+mkdir input
+cd input
+    dd if=/dev/urandom of=20megs bs=1M count=20
+    for i in $(seq 1 10); do
+        dd if=/dev/urandom of=2megs-$i bs=1M count=2
+    done
+    for i in $(seq 1 100); do
+        dd if=/dev/urandom of=500kb-$i bs=1k count=500
+    done
+    for i in $(seq 1 100); do
+        dd if=/dev/urandom of=500b-$i bs=1 count=500
+    done
+    dd if=/dev/zero of=zero50megs bs=1M count=50
+
+    touch empty
+    ln 20megs hardlink
+    ln -s 20megs symlink
+cd ..
+
+cat >metadata <<EOF
+test pack unpack files
+EOF
+
+BLOB_UPPER=5000
+PACK_UPPER=2000
+AVG_PACK=5000
+
+rm -rf output
+mkdir output
+$SFMF_PACK input output metadata $BLOB_UPPER $PACK_UPPER $AVG_PACK
+
+# Test that 20megs was packed as a blob
+BLOB_FILENAME="$(sha1sum input/20megs | cut -f1 -d' ').blob"
+# Assume that $BLOB_FILENAME was actually packed as a blob (in "output/")
+test -f "output/$BLOB_FILENAME"
+
+# Test unpacking normally
+rm -rf unpack1
+mkdir unpack1
+$SFMF_UNPACK -v output/manifest.sfmf unpack1
+verify_unpack unpack1
+
+# Test unpacking with reference files
+rm -rf unpack2
+mkdir unpack2
+$SFMF_UNPACK -v output/manifest.sfmf unpack2 unpack1
+verify_unpack unpack2
+
+# Test unpacking with local cache
+rm -rf unpack3
+mkdir unpack3
+$SFMF_UNPACK -v -C output output/manifest.sfmf unpack3
+verify_unpack unpack3
+
+# Test unpacking with local cache and reference files
+rm -rf unpack4
+mkdir unpack4
+$SFMF_UNPACK -v -C output output/manifest.sfmf unpack4 unpack3
+verify_unpack unpack4
+
+# Test mirroring a repository from another
+rm -rf mirror1
+mkdir mirror1
+$SFMF_UNPACK -v --download -C mirror1 output/manifest.sfmf
+diff -ru output mirror1
+
+# Test unpacking without downloading
+rm -rf unpack5
+mkdir unpack5
+$SFMF_UNPACK -v --offline -C mirror1 mirror1/manifest.sfmf unpack5
+verify_unpack unpack5
+
+# Test mirroring, with reference directory (different filenames), plus downloading
+rm -rf reference1 mirror2 unpack6
+mkdir reference1 mirror2 unpack6
+cp input/20megs reference1/20megs-different-filename
+$SFMF_UNPACK -v --download -C mirror2 output/manifest.sfmf . reference1
+# Make sure we did not mirror $BLOB_FILENAME, as it's available in reference1
+test ! -f "mirror2/$BLOB_FILENAME"
+$SFMF_UNPACK -v --offline -C mirror2 mirror2/manifest.sfmf unpack6 reference1
+verify_unpack unpack6
+
+# Test that "--download" can complete an incomplete mirror
+rm -rf mirror3
+mkdir mirror3
+$SFMF_UNPACK -v --download -C mirror3 output/manifest.sfmf
+test -f "mirror3/$BLOB_FILENAME"
+rm -f "mirror3/$BLOB_FILENAME"
+$SFMF_UNPACK -v --download -C mirror3 output/manifest.sfmf
+test -f "mirror3/$BLOB_FILENAME"
+diff -ru output mirror3
+
+# TODO: Test when downloading from mirror with damaged pack file
+# TODO: Test when downloading from mirror with damaged blob file
+
+# Test that "--download" will detect and fix invalid blobs
+rm -rf mirror4
+mkdir mirror4
+$SFMF_UNPACK -v --download -C mirror4 output/manifest.sfmf
+test -f "mirror4/$BLOB_FILENAME"
+rm -f "mirror4/$BLOB_FILENAME"
+echo "damaged file" >"mirror4/$BLOB_FILENAME"
+$SFMF_UNPACK -v --download -C mirror4 output/manifest.sfmf
+diff -ru output mirror4
+
+echo "ALL TESTS SUCCESSFUL"
+
+#rm -rf $HERE/tmp

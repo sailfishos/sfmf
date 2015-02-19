@@ -1,0 +1,16 @@
+Source: sfmf
+Section: utils
+Priority: optional
+Maintainer: Thomas Perl <thomas.perl@jolla.com>
+Build-Depends: debhelper (>= 9), zlib1g-dev
+Standards-Version: 3.9.5
+Homepage: https://github.com/sailfishos/sfmf/
+
+Package: sfmf
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, android-tools-fsutils, btrfs-tools, python, sudo, curl
+Description: Sailfish OS Factory Snapshot Update
+ Converts a live filesystem into a factory snapshot given a
+ manifest file built from a factory image, reducing the download
+ time and disk usage to a minimum by finding files locally first
+ and creating cross-subvolume btrfs reflinks.
