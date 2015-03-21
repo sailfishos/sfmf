@@ -5,7 +5,7 @@ VERSION ?= git
 CFLAGS += -std=gnu99 -Isrc/common -Isrc/external -Wall -DVERSION=\"$(VERSION)\"
 
 # Prefer the static library
-LIBS += -l:libz.a
+LIBS += -l:libz.a -lm
 
 ifeq ($(USE_LIBCURL),1)
     CFLAGS += -DUSE_LIBCURL

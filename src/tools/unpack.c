@@ -44,6 +44,7 @@
 #include <libgen.h>
 #include <getopt.h>
 #include <argp.h>
+#include <math.h>
 
 #define FREE_VAR(x) free(x), (x) = 0
 
@@ -97,6 +98,11 @@ struct UnpackOptions {
     int progress;
     int download_only;
     int offline_mode;
+
+    struct {
+        int current;
+        int total;
+    } steps;
 
     // Local cache directory for storing files
     int keep_cached_files;
@@ -933,22 +939,50 @@ void unpack_cleanup(void *user_data)
     }
 }
 
+static void draw_progress(struct UnpackOptions *opts, int i, const char *message)
+{
+    static float last_progress = -1.f;
+
+    if (opts->progress) {
+        float partial = (opts->header.entries_length && i >= 0)
+            ? fminf(1.f, (float)(i) / (float)(opts->header.entries_length))
+            : (i == -1 ? 0.f : 1.f);
+
+        float progress = fminf(1.f, ((float)(opts->steps.current) + partial) / (float)(opts->steps.total));
+
+        if (i >= 0 && progress - last_progress < 0.005f) {
+            // Avoid excessive status updates
+            return;
+        }
+
+        if (i == -1) {
+            SFMF_LOG("%c[K%.1f%% %s\n", 27, 100.f * progress, message);
+        } else {
+            SFMF_LOG("%c[K%.1f%% %s \r", 27, 100.f * progress, message);
+        }
+
+        last_progress = progress;
+    }
+}
+
+static void next_step(struct UnpackOptions *opts, const char *message)
+{
+    opts->steps.current++;
+    draw_progress(opts, -1, message);
+}
+
 static void foreach_unpack_entry(struct UnpackOptions *opts, void (*f)(struct UnpackOptions *opts, struct UnpackFileEntry *e))
 {
     for (int i=0; i<opts->header.entries_length; i++) {
         struct UnpackFileEntry *e = &(opts->fentries[i]);
 
         const char *filename = opts->filename_table + e->entry.filename_offset;
-        if (opts->progress) {
-            SFMF_LOG("%c[K%.1f%% %s \r", 27, 100.f * (float)(i) / (float)(opts->header.entries_length), filename);
-        }
+        draw_progress(opts, i, filename);
 
         f(opts, e);
     }
 
-    if (opts->progress) {
-        SFMF_LOG("%c[KDONE\n", 27);
-    }
+    draw_progress(opts, -2, "DONE");
 }
 
 int main(int argc, char *argv[])
@@ -958,7 +992,21 @@ int main(int argc, char *argv[])
 
     sfmf_cleanup_register(unpack_cleanup, opts);
 
+    // So we don't hog the CPU
+    nice(5);
+
     parse_opts(argc, argv, opts);
+
+    opts->steps.current = -1;
+    opts->steps.total = 8;
+
+    if (opts->offline_mode) {
+        opts->steps.total -= 1;
+    }
+
+    if (opts->download_only) {
+        opts->steps.total -= 2;
+    }
 
     sfmf_policy_set_log_debug(opts->verbose);
 
@@ -969,6 +1017,8 @@ int main(int argc, char *argv[])
     }
     assert(opts->cachedir != NULL);
     opts->cached_files = filelist_new();
+
+    next_step(opts, "Downloading manifest file");
 
     // TODO: Have an expected hash for the manifest file
     opts->manifest_local_filename = download_payload_file(opts, "manifest.sfmf", NULL, 0);
@@ -984,6 +1034,8 @@ int main(int argc, char *argv[])
 
     assert(opts->header.magic == SFMF_MAGIC_NUMBER);
     assert(opts->header.version == SFMF_CURRENT_VERSION);
+
+    next_step(opts, "Indexing local files");
 
     // Index all local files
     SFMF_LOG("==== Local Files ====\n");
@@ -1024,6 +1076,8 @@ int main(int argc, char *argv[])
     SFMF_LOG("%s\n", opts->metadata);
     SFMF_LOG("==== Metadata ====\n");
 
+    next_step(opts, "Parsing manifest file");
+
     opts->filename_table = malloc(opts->header.filename_table_size);
     res = fread(opts->filename_table, opts->header.filename_table_size, 1, opts->fp);
     assert(res == 1);
@@ -1060,21 +1114,19 @@ int main(int argc, char *argv[])
         }
     }
 
-    SFMF_LOG("==== Entries ====\n");
-
-    SFMF_LOG("-- Classifying entries\n");
+    next_step(opts, "Classifying entries");
     foreach_unpack_entry(opts, unpack_classify_entry);
 
     if (!opts->offline_mode) {
-        SFMF_LOG("-- Downloading requirements\n");
+        next_step(opts, "Downloading requirements");
         foreach_unpack_entry(opts, unpack_download_requirements);
     }
 
     if (!opts->download_only) {
-        SFMF_LOG("-- Writing files\n");
+        next_step(opts, "Writing files");
         foreach_unpack_entry(opts, unpack_write_entry);
 
-        SFMF_LOG("-- Setting permissions\n");
+        next_step(opts, "Setting permissions");
         {
             // Dir stack for setting the right mtimes on directories
             opts->dir_stack = dirstack_new(unpack_dirstack_entry_pop);
@@ -1087,7 +1139,7 @@ int main(int argc, char *argv[])
         }
     }
 
-    SFMF_LOG("==== Entries ====\n");
+    next_step(opts, "Verifying entries");
 
     // TODO: Verify entries
 
