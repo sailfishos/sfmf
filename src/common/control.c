@@ -32,6 +32,10 @@ static struct SFMF_Control_Private {
     guint object_registration;
     struct SFMF_Control_Callbacks *callbacks;
     void *callbacks_user_data;
+    struct {
+        char *target;
+        int progress;
+    } progress;
 } g;
 
 
@@ -79,6 +83,10 @@ static void sfmf_control_method_call_cb(GDBusConnection *connection, const gchar
             }
             g_dbus_method_invocation_return_value(invocation, g_variant_new("(b)", result));
             return;
+        } else if (g_strcmp0(method_name, "GetProgress") == 0) {
+            g_dbus_method_invocation_return_value(invocation,
+                    g_variant_new("(si)", g.progress.target ?: "", g.progress.progress));
+            return;
         }
     }
 
@@ -113,6 +121,10 @@ void sfmf_control_init(struct SFMF_Control_Callbacks *callbacks, void *user_data
         "  <interface name=\"org.sailfishos.sfmf\">\n"
         "    <method name=\"Abort\">\n"
         "      <arg name=\"result\" type=\"b\" direction=\"out\" />\n"
+        "    </method>\n"
+        "    <method name=\"GetProgress\">\n"
+        "      <arg name=\"subvolume\" type=\"s\" direction=\"out\" />\n"
+        "      <arg name=\"progress\" type=\"i\" direction=\"out\" />\n"
         "    </method>\n"
         "    <signal name=\"Progress\">\n"
         "      <arg name=\"subvolume\" type=\"s\" />\n"
@@ -149,9 +161,18 @@ void sfmf_control_set_progress(const char *target, int progress)
 {
     GError *error = NULL;
 
+    if (g.progress.target) {
+        g_free(g.progress.target);
+    }
+
+    g.progress.target = g_strdup(target);
+    if (target) {
+        g.progress.progress = progress;
+    }
+
     if (g.connection && !g_dbus_connection_emit_signal(g.connection, NULL,
                 "/", "org.sailfishos.sfmf", "Progress",
-                g_variant_new("(si)", target, progress), &error)) {
+                g_variant_new("(si)", g.progress.target ?: "", g.progress.progress), &error)) {
         SFMF_WARN("Could not send progress via D-Bus: %s\n", error->message);
         g_error_free(error);
     }
@@ -179,4 +200,9 @@ void sfmf_control_close()
 
     g.callbacks = NULL;
     g.callbacks_user_data = NULL;
+
+    if (g.progress.target) {
+        g_free(g.progress.target), g.progress.target = NULL;
+    }
+    g.progress.progress = 0;
 }
