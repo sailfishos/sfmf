@@ -104,6 +104,7 @@ struct UnpackOptions {
         int current;
         int total;
     } steps;
+    int abort;
 
     // Local cache directory for storing files
     int keep_cached_files;
@@ -981,6 +982,10 @@ static void foreach_unpack_entry(struct UnpackOptions *opts, void (*f)(struct Un
     for (int i=0; i<opts->header.entries_length; i++) {
         struct UnpackFileEntry *e = &(opts->fentries[i]);
 
+        if (opts->abort) {
+            SFMF_FAIL("Operation aborted via D-Bus\n");
+        }
+
         const char *filename = opts->filename_table + e->entry.filename_offset;
         draw_progress(opts, i, filename);
 
@@ -991,6 +996,17 @@ static void foreach_unpack_entry(struct UnpackOptions *opts, void (*f)(struct Un
 
     draw_progress(opts, -2, "DONE");
 }
+
+static int control_abort_cb(void *user_data)
+{
+    struct UnpackOptions *opts = user_data;
+    opts->abort = 1;
+    return 1;
+}
+
+static struct SFMF_Control_Callbacks control_callbacks = {
+    control_abort_cb,
+};
 
 int main(int argc, char *argv[])
 {
@@ -1007,7 +1023,7 @@ int main(int argc, char *argv[])
     opts->steps.current = -1;
     opts->steps.total = 8;
 
-    sfmf_control_init();
+    sfmf_control_init(&control_callbacks, opts);
 
     if (opts->offline_mode) {
         opts->steps.total -= 1;

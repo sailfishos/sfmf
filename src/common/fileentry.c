@@ -22,6 +22,7 @@
 #include "fileentry.h"
 #include "logging.h"
 #include "policy.h"
+#include "control.h"
 
 #include "sha1.h"
 
@@ -212,6 +213,10 @@ static int visit_directory(const char *fpath, const struct stat *sb,
 {
     // Add this entry to the list
     filelist_append(visit_directory_context->list, fpath, visit_directory_context->flags);
+
+    // Make sure D-Bus doesn't starve while we walk local directories
+    sfmf_control_process();
+
     return 0;
 }
 

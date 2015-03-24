@@ -20,8 +20,13 @@
 #ifndef SFMF_CONTROL_H
 #define SFMF_CONTROL_H
 
-void sfmf_control_init(); // registers on the bus, exits the process if that fails
-int sfmf_control_process(); // returns 1 if the application should quit
+struct SFMF_Control_Callbacks {
+    // Can be called by the client to abort the current operation
+    int (*abort)(void *user_data);
+};
+
+void sfmf_control_init(struct SFMF_Control_Callbacks *callbacks, void *user_data); // registers on the bus, exits if that fails
+void sfmf_control_process();
 void sfmf_control_set_progress(const char *target, int progress); // sends out a progress signal on the bus
 void sfmf_control_close(); // deregisters on the bus
 
