@@ -24,46 +24,58 @@
 #include <gio/gio.h>
 
 
-static GDBusConnection *g_connection = NULL;
-static guint g_own_name = 0;
-static gboolean g_name_acquired = FALSE;
-static guint g_object_registration = 0;
-static struct SFMF_Control_Callbacks *g_callbacks = NULL;
-static void *g_callbacks_user_data = NULL;
+// Private global variables
+static struct SFMF_Control_Private {
+    GDBusConnection *connection;
+    guint own_name;
+    gboolean name_acquired;
+    guint object_registration;
+    struct SFMF_Control_Callbacks *callbacks;
+    void *callbacks_user_data;
+} g;
+
 
 static void sfmf_control_bus_acquired_cb(GDBusConnection *connection, const gchar *name, gpointer user_data)
 {
+    struct SFMF_Control_Private *priv = user_data;
+
     SFMF_DEBUG("Bus acquired with name '%s'\n", name);
     g_object_ref(connection);
-    g_connection = connection;
+    priv->connection = connection;
 }
 
 static void sfmf_control_name_acquired_cb(GDBusConnection *connection, const gchar *name, gpointer user_data)
 {
+    struct SFMF_Control_Private *priv = user_data;
+
     SFMF_DEBUG("Name acquired: '%s'\n", name);
-    g_name_acquired = TRUE;
+    priv->name_acquired = TRUE;
 }
 
 static void sfmf_control_name_lost_cb(GDBusConnection *connection, const gchar *name, gpointer user_data)
 {
+    struct SFMF_Control_Private *priv = user_data;
+
     if (!connection) {
         SFMF_FAIL("Could not establish D-Bus connection\n");
     } else {
         SFMF_FAIL("D-Bus name lost: '%s'\n", name);
     }
 
-    g_name_acquired = FALSE;
+    priv->name_acquired = FALSE;
 }
 
 static void sfmf_control_method_call_cb(GDBusConnection *connection, const gchar *sender,
         const gchar *object_path, const gchar *interface_name, const gchar *method_name,
         GVariant *parameters, GDBusMethodInvocation *invocation, gpointer user_data)
 {
+    struct SFMF_Control_Private *priv = user_data;
+
     if (g_strcmp0(object_path, "/") == 0 && g_strcmp0(interface_name, "org.sailfishos.sfmf") == 0) {
         if (g_strcmp0(method_name, "Abort") == 0) {
             gboolean result = FALSE;
-            if (g_callbacks && g_callbacks->abort) {
-                result = g_callbacks->abort(g_callbacks_user_data);
+            if (priv->callbacks && priv->callbacks->abort) {
+                result = priv->callbacks->abort(priv->callbacks_user_data);
             }
             g_dbus_method_invocation_return_value(invocation, g_variant_new("(b)", result));
             return;
@@ -74,7 +86,7 @@ static void sfmf_control_method_call_cb(GDBusConnection *connection, const gchar
             "Invalid method call");
 }
 
-static const GDBusInterfaceVTable g_vtable = {
+static const GDBusInterfaceVTable sfmf_control_vtable = {
     sfmf_control_method_call_cb,
     NULL,
     NULL,
@@ -82,14 +94,14 @@ static const GDBusInterfaceVTable g_vtable = {
 
 void sfmf_control_init(struct SFMF_Control_Callbacks *callbacks, void *user_data)
 {
-    g_callbacks = callbacks;
-    g_callbacks_user_data = user_data;
+    g.callbacks = callbacks;
+    g.callbacks_user_data = user_data;
 
-    g_own_name = g_bus_own_name(G_BUS_TYPE_SYSTEM, "org.sailfishos.sfmf", G_BUS_NAME_OWNER_FLAGS_NONE,
+    g.own_name = g_bus_own_name(G_BUS_TYPE_SYSTEM, "org.sailfishos.sfmf", G_BUS_NAME_OWNER_FLAGS_NONE,
             sfmf_control_bus_acquired_cb, sfmf_control_name_acquired_cb, sfmf_control_name_lost_cb,
-            NULL, NULL);
+            &g, NULL);
 
-    while (!g_name_acquired) {
+    while (!g.name_acquired) {
         sfmf_control_process();
     }
 
@@ -114,11 +126,11 @@ void sfmf_control_init(struct SFMF_Control_Callbacks *callbacks, void *user_data
         g_error_free(error);
     }
 
-    g_object_registration = g_dbus_connection_register_object(g_connection, "/",
+    g.object_registration = g_dbus_connection_register_object(g.connection, "/",
             g_dbus_node_info_lookup_interface(node_info, "org.sailfishos.sfmf"),
-            &g_vtable, NULL, NULL, &error);
+            &sfmf_control_vtable, &g, NULL, &error);
 
-    if (!g_object_registration) {
+    if (!g.object_registration) {
         SFMF_FAIL("Could not register object on D-Bus: %s\n", error->message);
         g_error_free(error);
     }
@@ -137,7 +149,7 @@ void sfmf_control_set_progress(const char *target, int progress)
 {
     GError *error = NULL;
 
-    if (g_connection && !g_dbus_connection_emit_signal(g_connection, NULL,
+    if (g.connection && !g_dbus_connection_emit_signal(g.connection, NULL,
                 "/", "org.sailfishos.sfmf", "Progress",
                 g_variant_new("(si)", target, progress), &error)) {
         SFMF_WARN("Could not send progress via D-Bus: %s\n", error->message);
@@ -153,18 +165,18 @@ void sfmf_control_close()
         // empty loop body
     }
 
-    if (g_object_registration != 0) {
-        g_dbus_connection_unregister_object(g_connection, g_object_registration), g_object_registration = 0;
+    if (g.object_registration != 0) {
+        g_dbus_connection_unregister_object(g.connection, g.object_registration), g.object_registration = 0;
     }
 
-    if (g_own_name != 0) {
-        g_bus_unown_name(g_own_name), g_own_name = 0;
+    if (g.own_name != 0) {
+        g_bus_unown_name(g.own_name), g.own_name = 0;
     }
 
-    if (g_connection) {
-        g_object_unref(g_connection), g_connection = NULL;
+    if (g.connection) {
+        g_object_unref(g.connection), g.connection = NULL;
     }
 
-    g_callbacks = NULL;
-    g_callbacks_user_data = NULL;
+    g.callbacks = NULL;
+    g.callbacks_user_data = NULL;
 }
