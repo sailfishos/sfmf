@@ -42,8 +42,9 @@ sfmf-%: src/tools/%.o $(STATIC_LIB)
 	$(CC) -o $@ $^ $(LIBS) $(LIBS_$@)
 
 install: $(TOOLS)
-	install -d $(DESTDIR)$(PREFIX)/bin
+	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)/etc/dbus-1/system.d
 	install -m755 $(TOOLS) $(SCRIPTS) $(DESTDIR)$(PREFIX)/bin/
+	install -m644 dbus/org.sailfishos.sfmf.conf $(DESTDIR)/etc/dbus-1/system.d/
 
 clean:
 	rm -f $(TOOLS) $(STATIC_LIB) $(COMMON_OBJ) $(TOOLS_OBJ)

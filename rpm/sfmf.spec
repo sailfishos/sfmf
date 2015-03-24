@@ -48,6 +48,7 @@ Unpack utility and scripts for deploying updated factory images.
 %attr(755,root,root) %{_bindir}/%{name}-unpack
 %attr(755,root,root) %{_bindir}/%{name}-deploy
 %attr(755,root,root) %{_bindir}/%{name}-upgrade-factory-snapshot
+%attr(644,root,root) %{_sysconfdir}/dbus-1/system.d/org.sailfishos.sfmf.conf
 
 
 %package pack
