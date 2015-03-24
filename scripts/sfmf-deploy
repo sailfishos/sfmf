@@ -55,6 +55,8 @@ fi
 
 MANIFEST_URL="${MANIFEST_URL}/manifest.sfmf"
 
+export SFMF_TARGET="$TARGET"
+
 case $TARGET in
     @)
         exec $SFMF_UNPACK "$MANIFEST_URL" "$OUTPUTDIR" "$@"

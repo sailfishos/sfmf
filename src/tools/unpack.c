@@ -26,6 +26,7 @@
 #include "dirstack.h"
 #include "policy.h"
 #include "cleanup.h"
+#include "control.h"
 
 #define _XOPEN_SOURCE 500
 #define __USE_XOPEN_EXTENDED
@@ -937,6 +938,8 @@ void unpack_cleanup(void *user_data)
     for (int i=0; i<opts->n_sourcedirs; i++) {
         FREE_VAR(opts->sourcedirs[i]);
     }
+
+    sfmf_control_close();
 }
 
 static void draw_progress(struct UnpackOptions *opts, int i, const char *message)
@@ -961,6 +964,8 @@ static void draw_progress(struct UnpackOptions *opts, int i, const char *message
             SFMF_LOG("%c[K%.1f%% %s \r", 27, 100.f * progress, message);
         }
 
+        sfmf_control_set_progress(getenv("SFMF_TARGET") ?: "-", 100 * progress);
+
         last_progress = progress;
     }
 }
@@ -980,6 +985,8 @@ static void foreach_unpack_entry(struct UnpackOptions *opts, void (*f)(struct Un
         draw_progress(opts, i, filename);
 
         f(opts, e);
+
+        sfmf_control_process();
     }
 
     draw_progress(opts, -2, "DONE");
@@ -999,6 +1006,8 @@ int main(int argc, char *argv[])
 
     opts->steps.current = -1;
     opts->steps.total = 8;
+
+    sfmf_control_init();
 
     if (opts->offline_mode) {
         opts->steps.total -= 1;
@@ -1142,6 +1151,9 @@ int main(int argc, char *argv[])
     next_step(opts, "Verifying entries");
 
     // TODO: Verify entries
+
+    // Always send the 100% signal
+    sfmf_control_set_progress(getenv("SFMF_TARGET") ?: "-", 100);
 
     SFMF_LOG("==== Download Summary ====\n");
     size_t total = 0;

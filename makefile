@@ -4,8 +4,12 @@ VERSION ?= git
 
 CFLAGS += -std=gnu99 -Isrc/common -Isrc/external -Wall -DVERSION=\"$(VERSION)\"
 
-# Prefer the static library
-LIBS += -l:libz.a -lm
+# zlib and math
+LIBS += -lz -lm
+
+# gio for D-Bus access
+CFLAGS += $(shell pkg-config --cflags gio-2.0)
+LIBS += $(shell pkg-config --libs gio-2.0)
 
 ifeq ($(USE_LIBCURL),1)
     CFLAGS += -DUSE_LIBCURL
