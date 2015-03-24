@@ -27,7 +27,7 @@ struct SFMF_Control_Callbacks {
 
 void sfmf_control_init(struct SFMF_Control_Callbacks *callbacks, void *user_data); // registers on the bus, exits if that fails
 void sfmf_control_process();
-void sfmf_control_set_progress(const char *target, int progress); // sends out a progress signal on the bus
+void sfmf_control_set_progress(const char *target, int progress, const char *phase); // sends out a progress signal on the bus
 void sfmf_control_close(); // deregisters on the bus
 
 #endif /* SFMF_CONTROL_H */

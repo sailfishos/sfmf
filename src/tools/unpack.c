@@ -965,7 +965,9 @@ static void draw_progress(struct UnpackOptions *opts, int i, const char *message
             SFMF_LOG("%c[K%.1f%% %s \r", 27, 100.f * progress, message);
         }
 
-        sfmf_control_set_progress(getenv("SFMF_TARGET") ?: "-", 100 * progress);
+        sfmf_control_set_progress(getenv("SFMF_TARGET") ?: "-",
+            100 * progress,
+            (i == -1) ? message : NULL);
 
         last_progress = progress;
     }
@@ -1169,7 +1171,7 @@ int main(int argc, char *argv[])
     // TODO: Verify entries
 
     // Always send the 100% signal
-    sfmf_control_set_progress(getenv("SFMF_TARGET") ?: "-", 100);
+    sfmf_control_set_progress(getenv("SFMF_TARGET") ?: "-", 100, "FINISHED");
 
     SFMF_LOG("==== Download Summary ====\n");
     size_t total = 0;

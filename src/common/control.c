@@ -24,6 +24,11 @@
 #include <gio/gio.h>
 
 
+#define SFMF_DBUS_NAME "org.sailfishos.sfmf.unpack"
+#define SFMF_DBUS_INTERFACE "org.sailfishos.sfmf.unpack"
+#define SFMF_DBUS_PATH "/"
+
+
 // Private global variables
 static struct SFMF_Control_Private {
     GDBusConnection *connection;
@@ -35,6 +40,7 @@ static struct SFMF_Control_Private {
     struct {
         char *target;
         int progress;
+        char *phase;
     } progress;
 } g;
 
@@ -75,7 +81,7 @@ static void sfmf_control_method_call_cb(GDBusConnection *connection, const gchar
 {
     struct SFMF_Control_Private *priv = user_data;
 
-    if (g_strcmp0(object_path, "/") == 0 && g_strcmp0(interface_name, "org.sailfishos.sfmf") == 0) {
+    if (g_strcmp0(object_path, SFMF_DBUS_PATH) == 0 && g_strcmp0(interface_name, SFMF_DBUS_INTERFACE) == 0) {
         if (g_strcmp0(method_name, "Abort") == 0) {
             gboolean result = FALSE;
             if (priv->callbacks && priv->callbacks->abort) {
@@ -85,12 +91,13 @@ static void sfmf_control_method_call_cb(GDBusConnection *connection, const gchar
             return;
         } else if (g_strcmp0(method_name, "GetProgress") == 0) {
             g_dbus_method_invocation_return_value(invocation,
-                    g_variant_new("(si)", g.progress.target ?: "", g.progress.progress));
+                    g_variant_new("(sis)", g.progress.target ?: "", g.progress.progress,
+                        g.progress.phase ?: ""));
             return;
         }
     }
 
-    g_dbus_method_invocation_return_dbus_error(invocation, "org.sailfishos.sfmf.MethodCallError",
+    g_dbus_method_invocation_return_dbus_error(invocation, SFMF_DBUS_INTERFACE ".MethodCallError",
             "Invalid method call");
 }
 
@@ -105,7 +112,7 @@ void sfmf_control_init(struct SFMF_Control_Callbacks *callbacks, void *user_data
     g.callbacks = callbacks;
     g.callbacks_user_data = user_data;
 
-    g.own_name = g_bus_own_name(G_BUS_TYPE_SYSTEM, "org.sailfishos.sfmf", G_BUS_NAME_OWNER_FLAGS_NONE,
+    g.own_name = g_bus_own_name(G_BUS_TYPE_SYSTEM, SFMF_DBUS_NAME, G_BUS_NAME_OWNER_FLAGS_NONE,
             sfmf_control_bus_acquired_cb, sfmf_control_name_acquired_cb, sfmf_control_name_lost_cb,
             &g, NULL);
 
@@ -117,18 +124,20 @@ void sfmf_control_init(struct SFMF_Control_Callbacks *callbacks, void *user_data
     GDBusNodeInfo *node_info = g_dbus_node_info_new_for_xml(""
         "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\"\n"
         "  \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">\n"
-        "<node name=\"/\">\n"
-        "  <interface name=\"org.sailfishos.sfmf\">\n"
+        "<node name=\"" SFMF_DBUS_PATH "\">\n"
+        "  <interface name=\"" SFMF_DBUS_INTERFACE "\">\n"
         "    <method name=\"Abort\">\n"
         "      <arg name=\"result\" type=\"b\" direction=\"out\" />\n"
         "    </method>\n"
         "    <method name=\"GetProgress\">\n"
         "      <arg name=\"subvolume\" type=\"s\" direction=\"out\" />\n"
         "      <arg name=\"progress\" type=\"i\" direction=\"out\" />\n"
+        "      <arg name=\"phase\" type=\"s\" direction=\"out\" />\n"
         "    </method>\n"
         "    <signal name=\"Progress\">\n"
         "      <arg name=\"subvolume\" type=\"s\" />\n"
         "      <arg name=\"progress\" type=\"i\" />\n"
+        "      <arg name=\"phase\" type=\"s\" />\n"
         "    </signal>\n"
         "  </interface>\n"
         "</node>\n"
@@ -139,7 +148,7 @@ void sfmf_control_init(struct SFMF_Control_Callbacks *callbacks, void *user_data
     }
 
     g.object_registration = g_dbus_connection_register_object(g.connection, "/",
-            g_dbus_node_info_lookup_interface(node_info, "org.sailfishos.sfmf"),
+            g_dbus_node_info_lookup_interface(node_info, SFMF_DBUS_INTERFACE),
             &sfmf_control_vtable, &g, NULL, &error);
 
     if (!g.object_registration) {
@@ -157,22 +166,30 @@ void sfmf_control_process()
     }
 }
 
-void sfmf_control_set_progress(const char *target, int progress)
+void sfmf_control_set_progress(const char *target, int progress, const char *phase)
 {
     GError *error = NULL;
 
     if (g.progress.target) {
         g_free(g.progress.target);
     }
-
-    g.progress.target = g_strdup(target);
     if (target) {
-        g.progress.progress = progress;
+        g.progress.target = g_strdup(target);
+    }
+
+    g.progress.progress = progress;
+
+    if (phase && g.progress.phase) {
+        g_free(g.progress.phase);
+    }
+    if (phase) {
+        g.progress.phase = g_strdup(phase);
     }
 
     if (g.connection && !g_dbus_connection_emit_signal(g.connection, NULL,
-                "/", "org.sailfishos.sfmf", "Progress",
-                g_variant_new("(si)", g.progress.target ?: "", g.progress.progress), &error)) {
+          SFMF_DBUS_PATH, SFMF_DBUS_INTERFACE, "Progress",
+                g_variant_new("(sis)", g.progress.target ?: "", g.progress.progress,
+                    g.progress.phase ?: ""), &error)) {
         SFMF_WARN("Could not send progress via D-Bus: %s\n", error->message);
         g_error_free(error);
     }
@@ -205,4 +222,7 @@ void sfmf_control_close()
         g_free(g.progress.target), g.progress.target = NULL;
     }
     g.progress.progress = 0;
+    if (g.progress.phase) {
+        g_free(g.progress.phase), g.progress.phase = NULL;
+    }
 }
