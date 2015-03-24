@@ -947,30 +947,30 @@ static void draw_progress(struct UnpackOptions *opts, int i, const char *message
 {
     static float last_progress = -1.f;
 
+    float partial = (opts->header.entries_length && i >= 0)
+        ? fminf(1.f, (float)(i) / (float)(opts->header.entries_length))
+        : (i == -1 ? 0.f : 1.f);
+
+    float progress = fminf(1.f, ((float)(opts->steps.current) + partial) / (float)(opts->steps.total));
+
+    if (i >= 0 && progress - last_progress < 0.005f) {
+        // Avoid excessive status updates
+        return;
+    }
+
     if (opts->progress) {
-        float partial = (opts->header.entries_length && i >= 0)
-            ? fminf(1.f, (float)(i) / (float)(opts->header.entries_length))
-            : (i == -1 ? 0.f : 1.f);
-
-        float progress = fminf(1.f, ((float)(opts->steps.current) + partial) / (float)(opts->steps.total));
-
-        if (i >= 0 && progress - last_progress < 0.005f) {
-            // Avoid excessive status updates
-            return;
-        }
-
         if (i == -1) {
             SFMF_LOG("%c[K%.1f%% %s\n", 27, 100.f * progress, message);
         } else {
             SFMF_LOG("%c[K%.1f%% %s \r", 27, 100.f * progress, message);
         }
-
-        sfmf_control_set_progress(getenv("SFMF_TARGET") ?: "-",
-            100 * progress,
-            (i == -1) ? message : NULL);
-
-        last_progress = progress;
     }
+
+    sfmf_control_set_progress(getenv("SFMF_TARGET") ?: "-",
+        100 * progress,
+        (i == -1) ? message : NULL);
+
+    last_progress = progress;
 }
 
 static void next_step(struct UnpackOptions *opts, const char *message)
