@@ -19,6 +19,7 @@
 
 #include "convert.h"
 #include "logging.h"
+#include "control.h"
 
 #include <stdio.h>
 #include <assert.h>
@@ -58,8 +59,19 @@ struct BufferConvertContextSource {
     size_t pos;
 };
 
+// Number of blocks transferred between mainloop pumps
+#define PUMP_MAINLOOP_EVERY_X_BLOCKS 300
+
 static size_t convert_io_transfer(struct ConvertIO *io, char *buffer, size_t len)
 {
+    static int iterations = 0;
+    if (iterations++ >= PUMP_MAINLOOP_EVERY_X_BLOCKS) {
+        // Pump the mainloop after every X blocks transferred; should give
+        // good responsiveness while not slowing down data transfer
+        sfmf_control_process();
+        iterations = 0;
+    }
+
     size_t res = io->transfer(buffer, len, io->user_data);
     if (res >= 0) {
         io->total += res;
