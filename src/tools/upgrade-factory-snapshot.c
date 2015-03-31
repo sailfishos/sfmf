@@ -22,6 +22,7 @@
 
 #include <unistd.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <glib.h>
 #include <gio/gio.h>
@@ -35,6 +36,7 @@
 
 
 struct DeployTask {
+    gchar *name;
     gchar **cmd;
     int checked;
 };
@@ -79,6 +81,8 @@ struct UpgradeFactorySnapshot {
 void upgrade_factory_snapshot_init(struct UpgradeFactorySnapshot *ufs);
 void upgrade_factory_snapshot_run(struct UpgradeFactorySnapshot *ufs);
 void upgrade_factory_snapshot_quit(struct UpgradeFactorySnapshot *ufs);
+void upgrade_factory_snapshot_broadcast_status(struct UpgradeFactorySnapshot *ufs,
+        const char *partition, int progress, const char *message);
 
 // Callbacks
 void upgrade_factory_snapshot_cleanup_cb(void *user_data);
@@ -99,15 +103,15 @@ static gchar *cmd_rename_snapshot[] = { SAILFISH_SNAPSHOT, "rename", SNAPSHOT_NA
 static gchar *sbj_partitions[] = { "@", "@home", NULL };
 
 static struct DeployTask g_deploy_tasks[] = {
-    { cmd_list, 1 },
-    { cmd_delete_snapshot, 0 },
-    { cmd_deploy, 1 },
-    { cmd_delete_factory_rename, 0 },
-    { cmd_rename_factory, 1 },
-    { cmd_rename_snapshot, 1 },
-    { cmd_delete_factory_rename, 0 },
-    { cmd_list, 0 },
-    { NULL, 0 },
+    { "Checking for existing snapshots", cmd_list, 1 },
+    { "Removing temporary snapshot", cmd_delete_snapshot, 0 },
+    { "Deploying new factory snapshot", cmd_deploy, 1 },
+    { "Removing renamed factory snapshot", cmd_delete_factory_rename, 0 },
+    { "Renaming factory snapshot", cmd_rename_factory, 1 },
+    { "Activating new factory snapshot", cmd_rename_snapshot, 1 },
+    { "Removing renamed factory snapshot", cmd_delete_factory_rename, 0 },
+    { "Enumerating snapshots", cmd_list, 0 },
+    { NULL, NULL, 0 },
 };
 
 static struct DeployTaskQueue g_deploy_queue = {
@@ -124,9 +128,9 @@ static struct DeployTaskQueue g_deploy_queue = {
 };
 
 static struct DeployTask g_cleanup_tasks[] = {
-    { cmd_delete_snapshot, 0 },
-    { cmd_list, 0 },
-    { NULL, 0 },
+    { "Deleting temporary snapshot", cmd_delete_snapshot, 0 },
+    { "Enumerating snapshots", cmd_list, 0 },
+    { NULL, NULL, 0 },
 };
 
 static struct DeployTaskQueue g_cleanup_queue = {
@@ -196,6 +200,9 @@ void deploy_task_queue_on_subprocess_finished_cb(GPid pid, gint status, gpointer
     g_spawn_close_pid(pid);
     deploy_task_handle_exit_status(task, status);
 
+    struct UpgradeFactorySnapshot *ufs = queue->callback_user_data;
+    upgrade_factory_snapshot_broadcast_status(ufs, "", 100, "Finishing");
+
     if (queue->task_done_callback) {
         queue->task_done_callback(queue, queue->callback_user_data);
     }
@@ -204,6 +211,9 @@ void deploy_task_queue_on_subprocess_finished_cb(GPid pid, gint status, gpointer
 void deploy_task_queue_run_async(struct DeployTaskQueue *queue)
 {
     struct DeployTask *task = deploy_task_queue_get_current_task(queue);
+
+    struct UpgradeFactorySnapshot *ufs = queue->callback_user_data;
+    upgrade_factory_snapshot_broadcast_status(ufs, "", 0, "Starting");
 
     GPid pid = 0;
     GError *error = NULL;
@@ -237,8 +247,8 @@ int deploy_task_queue_next(struct DeployTaskQueue *queue, int async)
         struct DeployTask *task = deploy_task_queue_get_current_task(queue);
         if (task->cmd) {
             gchar *cmds = g_strjoinv(" ", task->cmd);
-            SFMF_DEBUG("Running command (queue=%s, pos=%d/%d, checked=%d): '%s'\n",
-                    queue->name, queue->current, queue->total, task->checked, cmds);
+            SFMF_DEBUG("Running '%s' (queue=%s, pos=%d/%d, checked=%d): '%s'\n",
+                    task->name, queue->name, queue->current, queue->total, task->checked, cmds);
             g_free(cmds);
 
             if (async) {
@@ -285,53 +295,71 @@ void upgrade_factory_snapshot_task_done_cb(struct DeployTaskQueue *queue, void *
     g_idle_add(upgrade_factory_snapshot_do_next_entry_cb, ufs);
 }
 
+void upgrade_factory_snapshot_broadcast_status(struct UpgradeFactorySnapshot *ufs,
+        const char *partition, int progress, const char *message)
+{
+    struct DeployTaskQueue *queue = ufs->deploy_queue;
+    struct DeployTask *task = deploy_task_queue_get_current_task(queue);
+
+    int partition_current = 0;
+    int partition_total = ufs->partitions_length;
+    while (partition_current < partition_total) {
+        if (strcmp(partition, ufs->partitions[partition_current]) == 0) {
+            break;
+        }
+        partition_current++;
+    }
+
+    if (partition_current == partition_total) {
+        if (strcmp(partition, "") != 0) {
+            SFMF_WARN("Unknown partition: %s\n", partition);
+        }
+        partition_current = partition_total = 1;
+    } else {
+        // index 0, 1 of length == 2 -> position 1, 2 of length == 2
+        partition_current++;
+    }
+
+    SFMF_LOG("queue: %s, task='%s' (%d/%d), partition='%s' (%d/%d), message='%s' (%d%%)\n",
+            queue->name, task->name, queue->current, queue->total,
+            partition, partition_current, partition_total,
+            message, progress);
+
+    GError *error = NULL;
+    if (!g_dbus_connection_emit_signal(ufs->system_bus, NULL, "/", "org.sailfishos.sfmf.ufs", "Progress",
+                g_variant_new("(ssiisiisi)", queue->name,
+                    task->name, queue->current, queue->total,
+                    partition, partition_current, partition_total,
+                    message, progress), &error)) {
+        SFMF_WARN("Could not forward progress via D-Bus: %s\n", error->message);
+        g_error_free(error);
+    }
+}
+
 void upgrade_factory_snapshot_dbus_signal_cb(GDBusConnection *connection,
         const gchar *sender_name, const gchar *object_path, const gchar *interface_name,
         const gchar *signal_name, GVariant *parameters, gpointer user_data)
 {
     struct UpgradeFactorySnapshot *ufs = user_data;
 
-    gchar *partition;
-    int progress;
-    gchar *message;
-    g_variant_get(parameters, "(sis)", &partition, &progress, &message);
     gchar *args = g_variant_print(parameters, TRUE);
-
-    int partition_pos = 0;
-    while (partition_pos < ufs->partitions_length) {
-        if (strcmp(partition, ufs->partitions[partition_pos]) == 0) {
-            break;
-        }
-        partition_pos++;
-    }
-
-    if (partition_pos == ufs->partitions_length) {
-        SFMF_WARN("Unknown partition: %s\n", partition);
-        partition_pos = -1;
-    } else {
-        // index 0, 1 of length == 2 -> position 1, 2 of length == 2
-        partition_pos++;
-    }
-
     SFMF_LOG("dbus: sender=%s path=%s signal=%s.%s%s\n", sender_name, object_path,
             interface_name, signal_name, args);
-    SFMF_LOG("queue: %s (%d/%d), partition='%s' (%d/%d), progress=%d, message='%s'\n",
-            ufs->deploy_queue->name, ufs->deploy_queue->current, ufs->deploy_queue->total,
-            partition, partition_pos, ufs->partitions_length,
-            progress, message);
-
-    GError *error = NULL;
-    if (!g_dbus_connection_emit_signal(ufs->system_bus, NULL, "/", "org.sailfishos.sfmf.ufs", "Progress",
-                g_variant_new("(siisiiis)", ufs->deploy_queue->name, ufs->deploy_queue->current,
-                    ufs->deploy_queue->total, partition, partition_pos, ufs->partitions_length,
-                    progress, message), &error)) {
-        SFMF_WARN("Could not forward progress via D-Bus: %s\n", error->message);
-        g_error_free(error);
-    }
-
     g_free(args);
-    g_free(partition);
-    g_free(message);
+
+    if (strcmp(signal_name, "Progress") == 0) {
+        gchar *partition;
+        int progress;
+        gchar *message;
+        g_variant_get(parameters, "(sis)", &partition, &progress, &message);
+
+        upgrade_factory_snapshot_broadcast_status(ufs, partition, progress, message);
+
+        g_free(partition);
+        g_free(message);
+    } else {
+        SFMF_WARN("Unhandled D-Bus signal: '%s'\n", signal_name);
+    }
 }
 
 void upgrade_factory_snapshot_init(struct UpgradeFactorySnapshot *ufs)
