@@ -34,6 +34,10 @@
 #define FACTORY_RENAME "factory-old"
 #define SNAPSHOT_NAME "factory-slipstream-tmp"
 
+#define UFS_DBUS_NAME "org.sailfishos.sfmf.ufs"
+#define UFS_DBUS_INTERFACE "org.sailfishos.sfmf.ufs"
+#define UFS_DBUS_PATH "/"
+
 
 struct DeployTask {
     gchar *name;
@@ -70,12 +74,19 @@ void deploy_task_queue_on_subprocess_finished_cb(GPid pid, gint status, gpointer
 struct UpgradeFactorySnapshot {
     GMainLoop *mainloop;
     GDBusConnection *system_bus;
+    guint own_name;
 
     struct DeployTaskQueue *deploy_queue;
     struct DeployTaskQueue *cleanup_queue;
 
     gchar **partitions;
     int partitions_length;
+
+    struct {
+        gchar *partition;
+        int progress;
+        gchar *message;
+    } status;
 };
 
 void upgrade_factory_snapshot_init(struct UpgradeFactorySnapshot *ufs);
@@ -85,6 +96,9 @@ void upgrade_factory_snapshot_broadcast_status(struct UpgradeFactorySnapshot *uf
         const char *partition, int progress, const char *message);
 
 // Callbacks
+void upgrade_factory_snapshot_bus_acquired_cb(GDBusConnection *connection, const gchar *name, gpointer user_data);
+void upgrade_factory_snapshot_name_acquired_cb(GDBusConnection *connection, const gchar *name, gpointer user_data);
+void upgrade_factory_snapshot_name_lost_cb(GDBusConnection *connection, const gchar *name, gpointer user_data);
 void upgrade_factory_snapshot_cleanup_cb(void *user_data);
 gboolean upgrade_factory_snapshot_do_next_entry_cb(gpointer user_data);
 void upgrade_factory_snapshot_finished_cb(struct DeployTaskQueue *queue, void *user_data);
@@ -149,21 +163,22 @@ static struct DeployTaskQueue g_cleanup_queue = {
 static struct UpgradeFactorySnapshot g_ufs = {
     NULL,
     NULL,
+    0,
 
     &g_deploy_queue,
     &g_cleanup_queue,
 
     sbj_partitions,
     -1,
+
+    { NULL, 0, NULL },
 };
 
 
 void deploy_task_handle_exit_status(struct DeployTask *task, int exit_status)
 {
     GError *error = NULL;
-    if (g_spawn_check_exit_status(exit_status, &error)) {
-        SFMF_DEBUG("Success\n");
-    } else {
+    if (!g_spawn_check_exit_status(exit_status, &error)) {
         if (task->checked) {
             SFMF_FAIL("Failed to run command: %s\n", error->message);
         } else {
@@ -301,6 +316,18 @@ void upgrade_factory_snapshot_broadcast_status(struct UpgradeFactorySnapshot *uf
     struct DeployTaskQueue *queue = ufs->deploy_queue;
     struct DeployTask *task = deploy_task_queue_get_current_task(queue);
 
+    if (ufs->status.partition) {
+        g_free(ufs->status.partition);
+    }
+    ufs->status.partition = g_strdup(partition);
+
+    ufs->status.progress = progress;
+
+    if (ufs->status.message) {
+        g_free(ufs->status.message);
+    }
+    ufs->status.message = g_strdup(message);
+
     int partition_current = 0;
     int partition_total = ufs->partitions_length;
     while (partition_current < partition_total) {
@@ -324,7 +351,7 @@ void upgrade_factory_snapshot_broadcast_status(struct UpgradeFactorySnapshot *uf
             message, progress);
 
     GError *error = NULL;
-    if (!g_dbus_connection_emit_signal(ufs->system_bus, NULL, "/", "org.sailfishos.sfmf.ufs", "Progress",
+    if (!g_dbus_connection_emit_signal(ufs->system_bus, NULL, "/", UFS_DBUS_INTERFACE, "Progress",
                 g_variant_new("(ssiisiisi)", queue->name,
                     task->name, queue->current+1, queue->total,
                     partition, partition_current+1, partition_total,
@@ -360,6 +387,38 @@ void upgrade_factory_snapshot_dbus_signal_cb(GDBusConnection *connection,
     }
 }
 
+void upgrade_factory_snapshot_bus_acquired_cb(GDBusConnection *connection, const gchar *name, gpointer user_data)
+{
+    struct UpgradeFactorySnapshot *ufs = user_data;
+
+    ufs->system_bus = connection;
+    g_object_ref(ufs->system_bus);
+}
+
+void upgrade_factory_snapshot_name_acquired_cb(GDBusConnection *connection, const gchar *name, gpointer user_data)
+{
+    struct UpgradeFactorySnapshot *ufs = user_data;
+
+    // Connect to D-Bus signals of the unpack utility
+    g_dbus_connection_signal_subscribe(ufs->system_bus, "org.sailfishos.sfmf.unpack",
+            "org.sailfishos.sfmf.unpack", NULL, "/", NULL, G_DBUS_SIGNAL_FLAGS_NONE,
+            upgrade_factory_snapshot_dbus_signal_cb, ufs, NULL);
+
+    // Kick off task queue processing
+    g_idle_add(upgrade_factory_snapshot_do_next_entry_cb, ufs);
+}
+
+void upgrade_factory_snapshot_name_lost_cb(GDBusConnection *connection, const gchar *name, gpointer user_data)
+{
+    struct UpgradeFactorySnapshot *ufs = user_data;
+
+    if (!connection) {
+        SFMF_FAIL("Could not establish D-Bus connection\n");
+    } else {
+        SFMF_FAIL("D-Bus name lost: '%s'\n", name);
+    }
+}
+
 void upgrade_factory_snapshot_init(struct UpgradeFactorySnapshot *ufs)
 {
     sfmf_cleanup_register(upgrade_factory_snapshot_cleanup_cb, ufs);
@@ -371,25 +430,19 @@ void upgrade_factory_snapshot_init(struct UpgradeFactorySnapshot *ufs)
     for (ufs->deploy_queue->total=0; ufs->deploy_queue->tasks[ufs->deploy_queue->total].cmd; ufs->deploy_queue->total++);
     for (ufs->cleanup_queue->total=0; ufs->cleanup_queue->tasks[ufs->cleanup_queue->total].cmd; ufs->cleanup_queue->total++);
     for (ufs->partitions_length=0; ufs->partitions[ufs->partitions_length]; ufs->partitions_length++);
+
     SFMF_DEBUG("Deploy tasks: %d, cleanup tasks: %d, partitions: %d\n",
             ufs->deploy_queue->total, ufs->cleanup_queue->total, ufs->partitions_length);
 
-    GError *error = NULL;
-    ufs->system_bus = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, &error);
-    if (!ufs->system_bus) {
-        SFMF_FAIL("Could not connect to system bus: %s\n", error->message);
-        g_error_free(error);
-    }
-
-    g_dbus_connection_signal_subscribe(ufs->system_bus, "org.sailfishos.sfmf.unpack",
-            "org.sailfishos.sfmf.unpack", NULL, "/", NULL, G_DBUS_SIGNAL_FLAGS_NONE,
-            upgrade_factory_snapshot_dbus_signal_cb, ufs, NULL);
+    ufs->own_name = g_bus_own_name(G_BUS_TYPE_SYSTEM, UFS_DBUS_NAME, G_BUS_NAME_OWNER_FLAGS_NONE,
+            upgrade_factory_snapshot_bus_acquired_cb,
+            upgrade_factory_snapshot_name_acquired_cb,
+            upgrade_factory_snapshot_name_lost_cb,
+            ufs, NULL);
 }
 
 void upgrade_factory_snapshot_run(struct UpgradeFactorySnapshot *ufs)
 {
-    g_idle_add(upgrade_factory_snapshot_do_next_entry_cb, ufs);
-
     SFMF_LOG("Deploying snapshot...\n");
     g_main_loop_run(ufs->mainloop);
     SFMF_LOG("Done.\n");
@@ -399,8 +452,18 @@ void upgrade_factory_snapshot_quit(struct UpgradeFactorySnapshot *ufs)
 {
     g_main_loop_unref(ufs->mainloop);
 
+    g_bus_unown_name(ufs->own_name);
+
     if (ufs->system_bus) {
         g_object_unref(ufs->system_bus);
+    }
+
+    if (ufs->status.partition) {
+        g_free(ufs->status.partition);
+    }
+
+    if (ufs->status.message) {
+        g_free(ufs->status.message);
     }
 }
 
