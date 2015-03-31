@@ -24,6 +24,7 @@
 #include <stdlib.h>
 
 #include <glib.h>
+#include <gio/gio.h>
 
 #define SFMF_DEPLOY "/usr/bin/sfmf-deploy"
 #define SAILFISH_SNAPSHOT "/usr/bin/sailfish-snapshot"
@@ -67,7 +68,7 @@ void deploy_task_handle_exit_status(struct DeployTask *task, int exit_status)
 {
     GError *error = NULL;
     if (g_spawn_check_exit_status(exit_status, &error)) {
-        printf("Success\n");
+        SFMF_DEBUG("Success\n");
     } else {
         if (task->checked) {
             SFMF_FAIL("Failed to run command: %s\n", error->message);
@@ -109,7 +110,8 @@ static void run_async(struct DeployTaskList *queue)
 
     GPid pid = 0;
     GError *error = NULL;
-    if (!g_spawn_async(NULL, task->cmd, NULL, G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD, NULL, queue, &pid, &error)) {
+    if (!g_spawn_async(NULL, task->cmd, NULL, G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD |
+                G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL, NULL, queue, &pid, &error)) {
         SFMF_FAIL("Failed to run command: %s\n", error->message);
         g_error_free(error);
     }
@@ -137,18 +139,15 @@ void upgrade_factory_snapshot_cleanup(void *user_data)
 int deploy_task_list_next(struct DeployTaskList *queue)
 {
     int result = 0;
-
-    printf("deploy_task_list_next: %p\n", queue);
-
     if (!queue->aborted) {
         queue->current++;
 
-        printf("NEXT: %s (#%d)\n", queue->name, queue->current);
+        SFMF_DEBUG("NEXT: %s (#%d)\n", queue->name, queue->current);
 
         struct DeployTask *task = &(queue->tasks[queue->current]);
         if (task->cmd) {
             gchar *cmds = g_strjoinv(" ", task->cmd);
-            printf("Running command (checked=%d): '%s'\n", task->checked, cmds);
+            SFMF_DEBUG("Running command (checked=%d): '%s'\n", task->checked, cmds);
             g_free(cmds);
 
             if (queue->task_done_callback) {
@@ -188,7 +187,6 @@ void deploy_task_list_abort(struct DeployTaskList *queue)
 gboolean do_next_entry(gpointer user_data)
 {
     struct DeployTaskList *queue = user_data;
-    SFMF_DEBUG("From mainloop, doing next entry\n");
     deploy_task_list_next(queue);
     return FALSE;
 }
@@ -202,7 +200,6 @@ gboolean every_second(gpointer user_data)
 
 void on_finished_main(struct DeployTaskList *queue)
 {
-    printf("DONE!\n");
     if (queue->mainloop) {
         g_main_loop_quit(queue->mainloop);
     }
@@ -210,10 +207,18 @@ void on_finished_main(struct DeployTaskList *queue)
 
 void on_task_done(struct DeployTaskList *queue)
 {
-    printf("On task done\n");
     g_idle_add(do_next_entry, queue);
 }
 
+void on_dbus_signal(GDBusConnection *connection, const gchar *sender_name,
+        const gchar *object_path, const gchar *interface_name, const gchar *signal_name,
+        GVariant *parameters, gpointer user_data)
+{
+    gchar *args = g_variant_print(parameters, TRUE);
+    SFMF_LOG("on_dbus_signal: sender=%s path=%s signal=%s.%s%s\n", sender_name, object_path,
+            interface_name, signal_name, args);
+    g_free(args);
+}
 
 int main(int argc, char *argv[])
 {
@@ -238,12 +243,25 @@ int main(int argc, char *argv[])
 
     g_idle_add(do_next_entry, &deploy_queue);
 
-    g_timeout_add(1000, every_second, &deploy_queue);
+    //g_timeout_add(1000, every_second, &deploy_queue);
+
+    GError *error = NULL;
+    GDBusConnection *system_bus = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, &error);
+    if (!system_bus) {
+        SFMF_FAIL("Could not connect to system bus: %s\n", error->message);
+        g_error_free(error);
+    }
+
+    g_dbus_connection_signal_subscribe(system_bus, "org.sailfishos.sfmf.unpack",
+            "org.sailfishos.sfmf.unpack", NULL, "/", NULL, G_DBUS_SIGNAL_FLAGS_NONE,
+            on_dbus_signal, &deploy_queue, NULL);
 
     SFMF_LOG("Deploying snapshot...\n");
     g_main_loop_run(mainloop);
     g_main_loop_unref(mainloop);
     SFMF_LOG("Done.\n");
+
+    g_object_unref(system_bus);
 
     return 0;
 }
