@@ -320,6 +320,15 @@ void upgrade_factory_snapshot_dbus_signal_cb(GDBusConnection *connection,
             partition, partition_pos, ufs->partitions_length,
             progress, message);
 
+    GError *error = NULL;
+    if (!g_dbus_connection_emit_signal(ufs->system_bus, NULL, "/", "org.sailfishos.sfmf.ufs", "Progress",
+                g_variant_new("(siisiiis)", ufs->deploy_queue->name, ufs->deploy_queue->current,
+                    ufs->deploy_queue->total, partition, partition_pos, ufs->partitions_length,
+                    progress, message), &error)) {
+        SFMF_WARN("Could not forward progress via D-Bus: %s\n", error->message);
+        g_error_free(error);
+    }
+
     g_free(args);
     g_free(partition);
     g_free(message);
