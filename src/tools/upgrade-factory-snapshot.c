@@ -46,6 +46,8 @@ struct DeployTask {
     int checked;
 };
 
+void deploy_task_handle_exit_status(struct DeployTask *task, int exit_status);
+
 
 struct DeployTaskList {
     const char *name;
@@ -61,31 +63,33 @@ int deploy_task_list_next(struct DeployTaskList *queue);
 void deploy_task_list_done(struct DeployTaskList *queue);
 void deploy_task_list_abort(struct DeployTaskList *queue);
 
-static void run_sync(gchar **cmd, int checked)
+void deploy_task_handle_exit_status(struct DeployTask *task, int exit_status)
 {
-    gchar *cmds = g_strjoinv(" ", cmd);
-
-    printf("Running command (checked=%d): '%s'\n", checked, cmds);
-
-    gint result = 0;
     GError *error = NULL;
-    if (g_spawn_sync(NULL, cmd, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL, &result, &error)) {
-        if (g_spawn_check_exit_status(result, &error)) {
-            printf("Success\n");
+    if (g_spawn_check_exit_status(exit_status, &error)) {
+        printf("Success\n");
+    } else {
+        if (task->checked) {
+            SFMF_FAIL("Failed to run command: %s\n", error->message);
         } else {
-            if (checked) {
-                SFMF_FAIL("Failed to run command: %s\n", error->message);
-            } else {
-                SFMF_WARN("Failure (ignored): %s\n", error->message);
-            }
-            g_error_free(error);
+            SFMF_WARN("Failure (ignored): %s\n", error->message);
         }
+        g_error_free(error);
+    }
+}
+
+static void run_sync(struct DeployTaskList *queue)
+{
+    struct DeployTask *task = &(queue->tasks[queue->current]);
+
+    gint exit_status = 0;
+    GError *error = NULL;
+    if (g_spawn_sync(NULL, task->cmd, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL, &exit_status, &error)) {
+        deploy_task_handle_exit_status(task, exit_status);
     } else {
         SFMF_FAIL("Failed to run command: %s\n", error->message);
         g_error_free(error);
     }
-
-    g_free(cmds);
 }
 
 static void on_subprocess_finished(GPid pid, gint status, gpointer user_data)
@@ -93,27 +97,19 @@ static void on_subprocess_finished(GPid pid, gint status, gpointer user_data)
     struct DeployTaskList *queue = user_data;
     struct DeployTask *task = &(queue->tasks[queue->current]);
 
-    GError *error = NULL;
-    if (!g_spawn_check_exit_status(status, &error)) {
-        if (task->checked) {
-            SFMF_FAIL("Failed to run: %s\n", error->message);
-        } else {
-            SFMF_WARN("Failed to run (ignoring): %s\n", error->message);
-        }
-        g_error_free(error);
-    }
+    g_spawn_close_pid(pid);
+    deploy_task_handle_exit_status(task, status);
 
     queue->task_done_callback(queue);
-
-    SFMF_DEBUG("Closing subprocess\n");
-    g_spawn_close_pid(pid);
 }
 
-static void run_async(gchar **cmd, int checked, struct DeployTaskList *queue)
+static void run_async(struct DeployTaskList *queue)
 {
+    struct DeployTask *task = &(queue->tasks[queue->current]);
+
     GPid pid = 0;
     GError *error = NULL;
-    if (!g_spawn_async(NULL, cmd, NULL, G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD, NULL, queue, &pid, &error)) {
+    if (!g_spawn_async(NULL, task->cmd, NULL, G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD, NULL, queue, &pid, &error)) {
         SFMF_FAIL("Failed to run command: %s\n", error->message);
         g_error_free(error);
     }
@@ -129,7 +125,7 @@ void upgrade_factory_snapshot_cleanup(void *user_data)
 
     static struct DeployTask cleanup_tasks[] = {
         { cmd_delete_snapshot, 0 },
-        //{ cmd_delete_factory_rename, 0 },
+        { cmd_list, 0 },
         { NULL, 0 },
     };
     static struct DeployTaskList cleanup_queue = { "cleanup", cleanup_tasks, -1, 0, NULL, NULL, NULL };
@@ -151,15 +147,18 @@ int deploy_task_list_next(struct DeployTaskList *queue)
 
         struct DeployTask *task = &(queue->tasks[queue->current]);
         if (task->cmd) {
-            if (!queue->aborted) {
-                if (queue->task_done_callback) {
-                    // Can run this asynchronously
-                    run_async(task->cmd, task->checked, queue);
-                } else {
-                    // Must run this synchronously
-                    run_sync(task->cmd, task->checked);
-                }
+            gchar *cmds = g_strjoinv(" ", task->cmd);
+            printf("Running command (checked=%d): '%s'\n", task->checked, cmds);
+            g_free(cmds);
+
+            if (queue->task_done_callback) {
+                // Can run this asynchronously
+                run_async(queue);
+            } else {
+                // Must run this synchronously
+                run_sync(queue);
             }
+
             result = 1;
         } else {
             deploy_task_list_done(queue);
@@ -227,6 +226,7 @@ int main(int argc, char *argv[])
         { cmd_delete_factory_rename, 0 },
         { cmd_rename_factory, 1 },
         { cmd_rename_snapshot, 1 },
+        { cmd_delete_factory_rename, 0 },
         { cmd_list, 0 },
         { NULL, 0 },
     };
