@@ -8,8 +8,8 @@ CFLAGS += -std=gnu99 -Isrc/common -Isrc/external -Wall -DVERSION=\"$(VERSION)\"
 LIBS += -lz -lm
 
 # gio for D-Bus access
-CFLAGS += $(shell pkg-config --cflags gio-2.0)
-LIBS += $(shell pkg-config --libs gio-2.0)
+CFLAGS += $(shell pkg-config --cflags glib-2.0 gio-2.0)
+LIBS += $(shell pkg-config --libs glib-2.0 gio-2.0)
 
 ifeq ($(USE_LIBCURL),1)
     CFLAGS += -DUSE_LIBCURL
