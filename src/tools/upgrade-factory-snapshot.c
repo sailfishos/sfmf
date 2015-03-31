@@ -314,22 +314,20 @@ void upgrade_factory_snapshot_broadcast_status(struct UpgradeFactorySnapshot *uf
         if (strcmp(partition, "") != 0) {
             SFMF_WARN("Unknown partition: %s\n", partition);
         }
-        partition_current = partition_total = 1;
-    } else {
-        // index 0, 1 of length == 2 -> position 1, 2 of length == 2
-        partition_current++;
+        partition_current = 0;
+        partition_total = 1;
     }
 
     SFMF_LOG("queue: %s, task='%s' (%d/%d), partition='%s' (%d/%d), message='%s' (%d%%)\n",
-            queue->name, task->name, queue->current, queue->total,
-            partition, partition_current, partition_total,
+            queue->name, task->name, queue->current+1, queue->total,
+            partition, partition_current+1, partition_total,
             message, progress);
 
     GError *error = NULL;
     if (!g_dbus_connection_emit_signal(ufs->system_bus, NULL, "/", "org.sailfishos.sfmf.ufs", "Progress",
                 g_variant_new("(ssiisiisi)", queue->name,
-                    task->name, queue->current, queue->total,
-                    partition, partition_current, partition_total,
+                    task->name, queue->current+1, queue->total,
+                    partition, partition_current+1, partition_total,
                     message, progress), &error)) {
         SFMF_WARN("Could not forward progress via D-Bus: %s\n", error->message);
         g_error_free(error);
@@ -343,8 +341,8 @@ void upgrade_factory_snapshot_dbus_signal_cb(GDBusConnection *connection,
     struct UpgradeFactorySnapshot *ufs = user_data;
 
     gchar *args = g_variant_print(parameters, TRUE);
-    SFMF_LOG("dbus: sender=%s path=%s signal=%s.%s%s\n", sender_name, object_path,
-            interface_name, signal_name, args);
+    //SFMF_DEBUG("dbus: sender=%s path=%s signal=%s.%s%s\n", sender_name, object_path,
+    //        interface_name, signal_name, args);
     g_free(args);
 
     if (strcmp(signal_name, "Progress") == 0) {
