@@ -34,14 +34,6 @@
 #define SNAPSHOT_NAME "factory-slipstream-tmp"
 
 
-static gchar *cmd_list[] = { SAILFISH_SNAPSHOT, "list", NULL };
-static gchar *cmd_delete_snapshot[] = { SAILFISH_SNAPSHOT, "delete", SNAPSHOT_NAME, NULL };
-static gchar *cmd_deploy[] = { SAILFISH_SNAPSHOT, "deploy", SFMF_DEPLOY, SNAPSHOT_NAME, NULL };
-static gchar *cmd_delete_factory_rename[] = { SAILFISH_SNAPSHOT, "delete", FACTORY_RENAME, NULL };
-static gchar *cmd_rename_factory[] = { SAILFISH_SNAPSHOT, "rename", FACTORY_NAME, FACTORY_RENAME, NULL };
-static gchar *cmd_rename_snapshot[] = { SAILFISH_SNAPSHOT, "rename", SNAPSHOT_NAME, FACTORY_NAME, NULL };
-
-
 struct DeployTask {
     gchar **cmd;
     int checked;
@@ -50,19 +42,117 @@ struct DeployTask {
 void deploy_task_handle_exit_status(struct DeployTask *task, int exit_status);
 
 
-struct DeployTaskList {
+struct DeployTaskQueue {
     const char *name;
+
     struct DeployTask *tasks;
     int current;
-    int aborted;
-    void (*finished_callback)(struct DeployTaskList *); // callback when everything is done
-    void (*task_done_callback)(struct DeployTaskList *); // if not-NULL, use async spawn; called after every task
-    GMainLoop *mainloop;
+    int total;
+    int finished;
+
+    void (*finished_callback)(struct DeployTaskQueue *, void *); // callback when everything is done
+    void (*task_done_callback)(struct DeployTaskQueue *, void *); // callback when one task is done
+    void *callback_user_data; // user_data pointer passed to finished_callback and task_done_callback
 };
 
-int deploy_task_list_next(struct DeployTaskList *queue);
-void deploy_task_list_done(struct DeployTaskList *queue);
-void deploy_task_list_abort(struct DeployTaskList *queue);
+int deploy_task_queue_next(struct DeployTaskQueue *queue, int async);
+void deploy_task_queue_abort(struct DeployTaskQueue *queue);
+struct DeployTask *deploy_task_queue_get_current_task(struct DeployTaskQueue *queue);
+void deploy_task_queue_run_sync(struct DeployTaskQueue *queue);
+void deploy_task_queue_run_async(struct DeployTaskQueue *queue);
+
+// Callbacks
+void deploy_task_queue_on_subprocess_finished_cb(GPid pid, gint status, gpointer user_data);
+
+
+struct UpgradeFactorySnapshot {
+    GMainLoop *mainloop;
+    GDBusConnection *system_bus;
+
+    struct DeployTaskQueue *deploy_queue;
+    struct DeployTaskQueue *cleanup_queue;
+
+    gchar **partitions;
+    int partitions_length;
+};
+
+void upgrade_factory_snapshot_init(struct UpgradeFactorySnapshot *ufs);
+void upgrade_factory_snapshot_run(struct UpgradeFactorySnapshot *ufs);
+void upgrade_factory_snapshot_quit(struct UpgradeFactorySnapshot *ufs);
+
+// Callbacks
+void upgrade_factory_snapshot_cleanup_cb(void *user_data);
+gboolean upgrade_factory_snapshot_do_next_entry_cb(gpointer user_data);
+void upgrade_factory_snapshot_finished_cb(struct DeployTaskQueue *queue, void *user_data);
+void upgrade_factory_snapshot_task_done_cb(struct DeployTaskQueue *queue, void *user_data);
+void upgrade_factory_snapshot_dbus_signal_cb(GDBusConnection *connection,
+        const gchar *sender_name, const gchar *object_path, const gchar *interface_name,
+        const gchar *signal_name, GVariant *parameters, gpointer user_data);
+
+
+static gchar *cmd_list[] = { SAILFISH_SNAPSHOT, "list", NULL };
+static gchar *cmd_delete_snapshot[] = { SAILFISH_SNAPSHOT, "delete", SNAPSHOT_NAME, NULL };
+static gchar *cmd_deploy[] = { SAILFISH_SNAPSHOT, "deploy", SFMF_DEPLOY, SNAPSHOT_NAME, NULL };
+static gchar *cmd_delete_factory_rename[] = { SAILFISH_SNAPSHOT, "delete", FACTORY_RENAME, NULL };
+static gchar *cmd_rename_factory[] = { SAILFISH_SNAPSHOT, "rename", FACTORY_NAME, FACTORY_RENAME, NULL };
+static gchar *cmd_rename_snapshot[] = { SAILFISH_SNAPSHOT, "rename", SNAPSHOT_NAME, FACTORY_NAME, NULL };
+static gchar *sbj_partitions[] = { "@", "@home", NULL };
+
+static struct DeployTask g_deploy_tasks[] = {
+    { cmd_list, 1 },
+    { cmd_delete_snapshot, 0 },
+    { cmd_deploy, 1 },
+    { cmd_delete_factory_rename, 0 },
+    { cmd_rename_factory, 1 },
+    { cmd_rename_snapshot, 1 },
+    { cmd_delete_factory_rename, 0 },
+    { cmd_list, 0 },
+    { NULL, 0 },
+};
+
+static struct DeployTaskQueue g_deploy_queue = {
+    "deploy",
+
+    g_deploy_tasks,
+    -1,
+    -1,
+    0,
+
+    upgrade_factory_snapshot_finished_cb,
+    upgrade_factory_snapshot_task_done_cb,
+    NULL,
+};
+
+static struct DeployTask g_cleanup_tasks[] = {
+    { cmd_delete_snapshot, 0 },
+    { cmd_list, 0 },
+    { NULL, 0 },
+};
+
+static struct DeployTaskQueue g_cleanup_queue = {
+    "cleanup",
+
+    g_cleanup_tasks,
+    -1,
+    -1,
+    0,
+
+    NULL,
+    NULL,
+    NULL,
+};
+
+static struct UpgradeFactorySnapshot g_ufs = {
+    NULL,
+    NULL,
+
+    &g_deploy_queue,
+    &g_cleanup_queue,
+
+    sbj_partitions,
+    -1,
+};
+
 
 void deploy_task_handle_exit_status(struct DeployTask *task, int exit_status)
 {
@@ -79,9 +169,14 @@ void deploy_task_handle_exit_status(struct DeployTask *task, int exit_status)
     }
 }
 
-static void run_sync(struct DeployTaskList *queue)
+struct DeployTask *deploy_task_queue_get_current_task(struct DeployTaskQueue *queue)
 {
-    struct DeployTask *task = &(queue->tasks[queue->current]);
+    return &(queue->tasks[queue->current]);
+}
+
+void deploy_task_queue_run_sync(struct DeployTaskQueue *queue)
+{
+    struct DeployTask *task = deploy_task_queue_get_current_task(queue);
 
     gint exit_status = 0;
     GError *error = NULL;
@@ -93,20 +188,22 @@ static void run_sync(struct DeployTaskList *queue)
     }
 }
 
-static void on_subprocess_finished(GPid pid, gint status, gpointer user_data)
+void deploy_task_queue_on_subprocess_finished_cb(GPid pid, gint status, gpointer user_data)
 {
-    struct DeployTaskList *queue = user_data;
-    struct DeployTask *task = &(queue->tasks[queue->current]);
+    struct DeployTaskQueue *queue = user_data;
+    struct DeployTask *task = deploy_task_queue_get_current_task(queue);
 
     g_spawn_close_pid(pid);
     deploy_task_handle_exit_status(task, status);
 
-    queue->task_done_callback(queue);
+    if (queue->task_done_callback) {
+        queue->task_done_callback(queue, queue->callback_user_data);
+    }
 }
 
-static void run_async(struct DeployTaskList *queue)
+void deploy_task_queue_run_async(struct DeployTaskQueue *queue)
 {
-    struct DeployTask *task = &(queue->tasks[queue->current]);
+    struct DeployTask *task = deploy_task_queue_get_current_task(queue);
 
     GPid pid = 0;
     GError *error = NULL;
@@ -116,152 +213,170 @@ static void run_async(struct DeployTaskList *queue)
         g_error_free(error);
     }
 
-    g_child_watch_add(pid, on_subprocess_finished, queue);
+    g_child_watch_add(pid, deploy_task_queue_on_subprocess_finished_cb, queue);
 }
 
-void upgrade_factory_snapshot_cleanup(void *user_data)
+void upgrade_factory_snapshot_cleanup_cb(void *user_data)
 {
-    struct DeployTaskList *queue = (struct DeployTaskList *)user_data;
+    struct UpgradeFactorySnapshot *ufs = user_data;
+
     // Make sure the main tasks are not run anymore
-    deploy_task_list_abort(queue);
+    deploy_task_queue_abort(ufs->deploy_queue);
 
-    static struct DeployTask cleanup_tasks[] = {
-        { cmd_delete_snapshot, 0 },
-        { cmd_list, 0 },
-        { NULL, 0 },
-    };
-    static struct DeployTaskList cleanup_queue = { "cleanup", cleanup_tasks, -1, 0, NULL, NULL, NULL };
-
-    // Run all steps until we're finished
-    while (deploy_task_list_next(&cleanup_queue));
+    // Run all steps synchronously until we're finished
+    while (deploy_task_queue_next(ufs->cleanup_queue, 0));
 }
 
-int deploy_task_list_next(struct DeployTaskList *queue)
+int deploy_task_queue_next(struct DeployTaskQueue *queue, int async)
 {
     int result = 0;
-    if (!queue->aborted) {
+
+    if (!queue->finished) {
         queue->current++;
 
-        SFMF_DEBUG("NEXT: %s (#%d)\n", queue->name, queue->current);
-
-        struct DeployTask *task = &(queue->tasks[queue->current]);
+        struct DeployTask *task = deploy_task_queue_get_current_task(queue);
         if (task->cmd) {
             gchar *cmds = g_strjoinv(" ", task->cmd);
-            SFMF_DEBUG("Running command (checked=%d): '%s'\n", task->checked, cmds);
+            SFMF_DEBUG("Running command (queue=%s, pos=%d/%d, checked=%d): '%s'\n",
+                    queue->name, queue->current, queue->total, task->checked, cmds);
             g_free(cmds);
 
-            if (queue->task_done_callback) {
-                // Can run this asynchronously
-                run_async(queue);
+            if (async) {
+                deploy_task_queue_run_async(queue);
             } else {
-                // Must run this synchronously
-                run_sync(queue);
+                deploy_task_queue_run_sync(queue);
             }
 
             result = 1;
         } else {
-            deploy_task_list_done(queue);
+            if (queue->finished_callback) {
+                queue->finished_callback(queue, queue->callback_user_data);
+            }
+
+            queue->finished = 1;
         }
-    } else {
-        deploy_task_list_done(queue);
     }
 
     return result;
 }
 
-void deploy_task_list_done(struct DeployTaskList *queue)
-{
-    SFMF_LOG("Queue done: %s\n", queue->name);
-
-    if (queue->finished_callback && !queue->aborted) {
-        queue->finished_callback(queue);
-    }
-}
-
-void deploy_task_list_abort(struct DeployTaskList *queue)
+void deploy_task_queue_abort(struct DeployTaskQueue *queue)
 {
     SFMF_LOG("Aborting queue: %s\n", queue->name);
-    queue->aborted = 1;
+    queue->finished = 1;
 }
 
-gboolean do_next_entry(gpointer user_data)
+gboolean upgrade_factory_snapshot_do_next_entry_cb(gpointer user_data)
 {
-    struct DeployTaskList *queue = user_data;
-    deploy_task_list_next(queue);
+    struct UpgradeFactorySnapshot *ufs = user_data;
+    deploy_task_queue_next(ufs->deploy_queue, 1);
     return FALSE;
 }
 
-gboolean every_second(gpointer user_data)
+void upgrade_factory_snapshot_finished_cb(struct DeployTaskQueue *queue, void *user_data)
 {
-    struct DeployTaskList *queue = user_data;
-    printf("Watch, queue position = %d, aborted = %d\n", queue->current, queue->current);
-    return TRUE;
+    struct UpgradeFactorySnapshot *ufs = user_data;
+    g_main_loop_quit(ufs->mainloop);
 }
 
-void on_finished_main(struct DeployTaskList *queue)
+void upgrade_factory_snapshot_task_done_cb(struct DeployTaskQueue *queue, void *user_data)
 {
-    if (queue->mainloop) {
-        g_main_loop_quit(queue->mainloop);
-    }
+    struct UpgradeFactorySnapshot *ufs = user_data;
+    g_idle_add(upgrade_factory_snapshot_do_next_entry_cb, ufs);
 }
 
-void on_task_done(struct DeployTaskList *queue)
+void upgrade_factory_snapshot_dbus_signal_cb(GDBusConnection *connection,
+        const gchar *sender_name, const gchar *object_path, const gchar *interface_name,
+        const gchar *signal_name, GVariant *parameters, gpointer user_data)
 {
-    g_idle_add(do_next_entry, queue);
-}
+    struct UpgradeFactorySnapshot *ufs = user_data;
 
-void on_dbus_signal(GDBusConnection *connection, const gchar *sender_name,
-        const gchar *object_path, const gchar *interface_name, const gchar *signal_name,
-        GVariant *parameters, gpointer user_data)
-{
+    gchar *partition;
+    int progress;
+    gchar *message;
+    g_variant_get(parameters, "(sis)", &partition, &progress, &message);
     gchar *args = g_variant_print(parameters, TRUE);
-    SFMF_LOG("on_dbus_signal: sender=%s path=%s signal=%s.%s%s\n", sender_name, object_path,
+
+    int partition_pos = 0;
+    while (partition_pos < ufs->partitions_length) {
+        if (strcmp(partition, ufs->partitions[partition_pos]) == 0) {
+            break;
+        }
+        partition_pos++;
+    }
+
+    if (partition_pos == ufs->partitions_length) {
+        SFMF_WARN("Unknown partition: %s\n", partition);
+        partition_pos = -1;
+    } else {
+        // index 0, 1 of length == 2 -> position 1, 2 of length == 2
+        partition_pos++;
+    }
+
+    SFMF_LOG("dbus: sender=%s path=%s signal=%s.%s%s\n", sender_name, object_path,
             interface_name, signal_name, args);
+    SFMF_LOG("queue: %s (%d/%d), partition='%s' (%d/%d), progress=%d, message='%s'\n",
+            ufs->deploy_queue->name, ufs->deploy_queue->current, ufs->deploy_queue->total,
+            partition, partition_pos, ufs->partitions_length,
+            progress, message);
+
     g_free(args);
+    g_free(partition);
+    g_free(message);
 }
 
-int main(int argc, char *argv[])
+void upgrade_factory_snapshot_init(struct UpgradeFactorySnapshot *ufs)
 {
-    GMainLoop *mainloop = g_main_loop_new(NULL, FALSE);
+    sfmf_cleanup_register(upgrade_factory_snapshot_cleanup_cb, ufs);
 
-    static struct DeployTask deploy_tasks[] = {
-        { cmd_list, 1 },
-        { cmd_delete_snapshot, 0 },
-        { cmd_deploy, 1 },
-        { cmd_delete_factory_rename, 0 },
-        { cmd_rename_factory, 1 },
-        { cmd_rename_snapshot, 1 },
-        { cmd_delete_factory_rename, 0 },
-        { cmd_list, 0 },
-        { NULL, 0 },
-    };
-    static struct DeployTaskList deploy_queue = { "deploy", deploy_tasks, -1, 0, on_finished_main, on_task_done, NULL };
+    ufs->mainloop = g_main_loop_new(NULL, FALSE);
+    ufs->deploy_queue->callback_user_data = ufs;
+    ufs->cleanup_queue->callback_user_data = ufs;
 
-    deploy_queue.mainloop = mainloop;
-
-    sfmf_cleanup_register(upgrade_factory_snapshot_cleanup, &deploy_queue);
-
-    g_idle_add(do_next_entry, &deploy_queue);
-
-    //g_timeout_add(1000, every_second, &deploy_queue);
+    for (ufs->deploy_queue->total=0; ufs->deploy_queue->tasks[ufs->deploy_queue->total].cmd; ufs->deploy_queue->total++);
+    for (ufs->cleanup_queue->total=0; ufs->cleanup_queue->tasks[ufs->cleanup_queue->total].cmd; ufs->cleanup_queue->total++);
+    for (ufs->partitions_length=0; ufs->partitions[ufs->partitions_length]; ufs->partitions_length++);
+    SFMF_DEBUG("Deploy tasks: %d, cleanup tasks: %d, partitions: %d\n",
+            ufs->deploy_queue->total, ufs->cleanup_queue->total, ufs->partitions_length);
 
     GError *error = NULL;
-    GDBusConnection *system_bus = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, &error);
-    if (!system_bus) {
+    ufs->system_bus = g_bus_get_sync(G_BUS_TYPE_SYSTEM, NULL, &error);
+    if (!ufs->system_bus) {
         SFMF_FAIL("Could not connect to system bus: %s\n", error->message);
         g_error_free(error);
     }
 
-    g_dbus_connection_signal_subscribe(system_bus, "org.sailfishos.sfmf.unpack",
+    g_dbus_connection_signal_subscribe(ufs->system_bus, "org.sailfishos.sfmf.unpack",
             "org.sailfishos.sfmf.unpack", NULL, "/", NULL, G_DBUS_SIGNAL_FLAGS_NONE,
-            on_dbus_signal, &deploy_queue, NULL);
+            upgrade_factory_snapshot_dbus_signal_cb, ufs, NULL);
+}
+
+void upgrade_factory_snapshot_run(struct UpgradeFactorySnapshot *ufs)
+{
+    g_idle_add(upgrade_factory_snapshot_do_next_entry_cb, ufs);
 
     SFMF_LOG("Deploying snapshot...\n");
-    g_main_loop_run(mainloop);
-    g_main_loop_unref(mainloop);
+    g_main_loop_run(ufs->mainloop);
     SFMF_LOG("Done.\n");
+}
 
-    g_object_unref(system_bus);
+void upgrade_factory_snapshot_quit(struct UpgradeFactorySnapshot *ufs)
+{
+    g_main_loop_unref(ufs->mainloop);
+
+    if (ufs->system_bus) {
+        g_object_unref(ufs->system_bus);
+    }
+}
+
+
+int main(int argc, char *argv[])
+{
+    struct UpgradeFactorySnapshot *ufs = &g_ufs;
+
+    upgrade_factory_snapshot_init(ufs);
+    upgrade_factory_snapshot_run(ufs);
+    upgrade_factory_snapshot_quit(ufs);
 
     return 0;
 }
