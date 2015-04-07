@@ -19,6 +19,7 @@
 
 #include "control.h"
 #include "logging.h"
+#include "privileged.h"
 
 #include <stdlib.h>
 #include <gio/gio.h>
@@ -81,7 +82,9 @@ static void sfmf_control_method_call_cb(GDBusConnection *connection, const gchar
 {
     struct SFMF_Control_Private *priv = user_data;
 
-    if (g_strcmp0(object_path, SFMF_DBUS_PATH) == 0 && g_strcmp0(interface_name, SFMF_DBUS_INTERFACE) == 0) {
+    if (g_strcmp0(object_path, SFMF_DBUS_PATH) == 0 &&
+            g_strcmp0(interface_name, SFMF_DBUS_INTERFACE) == 0 &&
+            sfmf_dbus_is_privileged(connection, sender)) {
         if (g_strcmp0(method_name, "Abort") == 0) {
             gboolean result = FALSE;
             if (priv->callbacks && priv->callbacks->abort) {

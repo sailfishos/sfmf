@@ -19,6 +19,7 @@
 
 #include "logging.h"
 #include "cleanup.h"
+#include "privileged.h"
 
 #include <unistd.h>
 #include <stdlib.h>
@@ -212,12 +213,20 @@ void deploy_task_handle_exit_status(struct DeployTask *task, int exit_status)
 
 struct DeployTask *deploy_task_queue_get_current_task(struct DeployTaskQueue *queue)
 {
-    return &(queue->tasks[queue->current]);
+    if (queue->current >= 0) {
+        return &(queue->tasks[queue->current]);
+    }
+
+    return NULL;
 }
 
 void deploy_task_queue_run_sync(struct DeployTaskQueue *queue)
 {
     struct DeployTask *task = deploy_task_queue_get_current_task(queue);
+
+    if (!task) {
+        SFMF_FAIL("Current task is invalid\n");
+    }
 
     gint exit_status = 0;
     GError *error = NULL;
@@ -234,6 +243,10 @@ void deploy_task_queue_on_subprocess_finished_cb(GPid pid, gint status, gpointer
     struct DeployTaskQueue *queue = user_data;
     struct DeployTask *task = deploy_task_queue_get_current_task(queue);
 
+    if (!task) {
+        SFMF_FAIL("Current task is invalid\n");
+    }
+
     g_spawn_close_pid(pid);
     deploy_task_handle_exit_status(task, status);
 
@@ -248,6 +261,10 @@ void deploy_task_queue_on_subprocess_finished_cb(GPid pid, gint status, gpointer
 void deploy_task_queue_run_async(struct DeployTaskQueue *queue)
 {
     struct DeployTask *task = deploy_task_queue_get_current_task(queue);
+
+    if (!task) {
+        SFMF_FAIL("Current task is invalid\n");
+    }
 
     struct UpgradeFactorySnapshot *ufs = queue->callback_user_data;
     upgrade_factory_snapshot_broadcast_status(ufs, "", 0, "Starting");
@@ -286,6 +303,11 @@ int deploy_task_queue_next(struct DeployTaskQueue *queue, int async)
         queue->current++;
 
         struct DeployTask *task = deploy_task_queue_get_current_task(queue);
+
+        if (!task) {
+            SFMF_FAIL("Current task is invalid\n");
+        }
+
         if (task->cmd) {
             gchar *cmds = g_strjoinv(" ", task->cmd);
             SFMF_DEBUG("Running '%s' (queue=%s, pos=%d/%d, checked=%d): '%s'\n",
@@ -342,6 +364,10 @@ void upgrade_factory_snapshot_broadcast_status(struct UpgradeFactorySnapshot *uf
 {
     struct DeployTaskQueue *queue = ufs->deploy_queue;
     struct DeployTask *task = deploy_task_queue_get_current_task(queue);
+
+    if (!task) {
+        SFMF_FAIL("Current task is invalid\n");
+    }
 
     if (ufs->status.partition) {
         g_free(ufs->status.partition);
@@ -448,7 +474,9 @@ void upgrade_factory_snapshot_method_call_cb(GDBusConnection *connection, const 
     struct UpgradeFactorySnapshot *ufs = user_data;
     GVariant *return_value = NULL;
 
-    if (g_strcmp0(object_path, UFS_DBUS_PATH) == 0 && g_strcmp0(interface_name, UFS_DBUS_INTERFACE) == 0) {
+    if (g_strcmp0(object_path, UFS_DBUS_PATH) == 0 &&
+            g_strcmp0(interface_name, UFS_DBUS_INTERFACE) == 0 &&
+            sfmf_dbus_is_privileged(connection, sender)) {
         if (g_strcmp0(method_name, "Start") == 0) {
             gboolean result = FALSE;
             if (!ufs->running) {
@@ -463,7 +491,7 @@ void upgrade_factory_snapshot_method_call_cb(GDBusConnection *connection, const 
             struct DeployTask *task = deploy_task_queue_get_current_task(queue);
 
             return_value = g_variant_new("(ssiisiisi)", queue->name,
-                    task->name, queue->current+1, queue->total,
+                    task ? task->name : "", queue->current+1, queue->total,
                     ufs->status.partition ?: "", ufs->status.partition_current+1, ufs->status.partition_total,
                     ufs->status.message ?: "", ufs->status.progress);
         }
