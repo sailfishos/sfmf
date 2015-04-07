@@ -75,6 +75,9 @@ struct UpgradeFactorySnapshot {
     GMainLoop *mainloop;
     GDBusConnection *system_bus;
     guint own_name;
+    guint object_registration;
+
+    gboolean started;
 
     struct DeployTaskQueue *deploy_queue;
     struct DeployTaskQueue *cleanup_queue;
@@ -86,6 +89,8 @@ struct UpgradeFactorySnapshot {
         gchar *partition;
         int progress;
         gchar *message;
+        int partition_current;
+        int partition_total;
     } status;
 };
 
@@ -106,6 +111,9 @@ void upgrade_factory_snapshot_task_done_cb(struct DeployTaskQueue *queue, void *
 void upgrade_factory_snapshot_dbus_signal_cb(GDBusConnection *connection,
         const gchar *sender_name, const gchar *object_path, const gchar *interface_name,
         const gchar *signal_name, GVariant *parameters, gpointer user_data);
+void upgrade_factory_snapshot_method_call_cb(GDBusConnection *connection, const gchar *sender,
+        const gchar *object_path, const gchar *interface_name, const gchar *method_name,
+        GVariant *parameters, GDBusMethodInvocation *invocation, gpointer user_data);
 
 
 static gchar *cmd_list[] = { SAILFISH_SNAPSHOT, "list", NULL };
@@ -164,6 +172,9 @@ static struct UpgradeFactorySnapshot g_ufs = {
     NULL,
     NULL,
     0,
+    0,
+
+    FALSE,
 
     &g_deploy_queue,
     &g_cleanup_queue,
@@ -171,7 +182,13 @@ static struct UpgradeFactorySnapshot g_ufs = {
     sbj_partitions,
     -1,
 
-    { NULL, 0, NULL },
+    { NULL, 0, NULL, 0, 0 },
+};
+
+static const GDBusInterfaceVTable upgrade_factory_snapshot_vtable = {
+    upgrade_factory_snapshot_method_call_cb,
+    NULL,
+    NULL,
 };
 
 
@@ -345,6 +362,9 @@ void upgrade_factory_snapshot_broadcast_status(struct UpgradeFactorySnapshot *uf
         partition_total = 1;
     }
 
+    ufs->status.partition_current = partition_current;
+    ufs->status.partition_total = partition_total;
+
     SFMF_LOG("queue: %s, task='%s' (%d/%d), partition='%s' (%d/%d), message='%s' (%d%%)\n",
             queue->name, task->name, queue->current+1, queue->total,
             partition, partition_current+1, partition_total,
@@ -354,8 +374,8 @@ void upgrade_factory_snapshot_broadcast_status(struct UpgradeFactorySnapshot *uf
     if (!g_dbus_connection_emit_signal(ufs->system_bus, NULL, "/", UFS_DBUS_INTERFACE, "Progress",
                 g_variant_new("(ssiisiisi)", queue->name,
                     task->name, queue->current+1, queue->total,
-                    partition, partition_current+1, partition_total,
-                    message, progress), &error)) {
+                    ufs->status.partition, ufs->status.partition_current+1, ufs->status.partition_total,
+                    ufs->status.message, ufs->status.progress), &error)) {
         SFMF_WARN("Could not forward progress via D-Bus: %s\n", error->message);
         g_error_free(error);
     }
@@ -387,6 +407,40 @@ void upgrade_factory_snapshot_dbus_signal_cb(GDBusConnection *connection,
     }
 }
 
+void upgrade_factory_snapshot_method_call_cb(GDBusConnection *connection, const gchar *sender,
+        const gchar *object_path, const gchar *interface_name, const gchar *method_name,
+        GVariant *parameters, GDBusMethodInvocation *invocation, gpointer user_data)
+{
+    struct UpgradeFactorySnapshot *ufs = user_data;
+
+    if (g_strcmp0(object_path, UFS_DBUS_PATH) == 0 && g_strcmp0(interface_name, UFS_DBUS_INTERFACE) == 0) {
+        if (g_strcmp0(method_name, "Start") == 0) {
+            gboolean result = FALSE;
+            if (!ufs->started) {
+                g_idle_add(upgrade_factory_snapshot_do_next_entry_cb, ufs);
+                ufs->started = TRUE;
+                result = TRUE;
+            }
+
+            g_dbus_method_invocation_return_value(invocation, g_variant_new("(b)", result));
+            return;
+        } else if (g_strcmp0(method_name, "GetProgress") == 0) {
+            struct DeployTaskQueue *queue = ufs->deploy_queue;
+            struct DeployTask *task = deploy_task_queue_get_current_task(queue);
+
+            g_dbus_method_invocation_return_value(invocation,
+                    g_variant_new("(ssiisiisi)", queue->name,
+                        task->name, queue->current+1, queue->total,
+                        ufs->status.partition ?: "", ufs->status.partition_current+1, ufs->status.partition_total,
+                        ufs->status.message ?: "", ufs->status.progress));
+            return;
+        }
+    }
+
+    g_dbus_method_invocation_return_dbus_error(invocation, UFS_DBUS_INTERFACE ".MethodCallError",
+            "Invalid method call");
+}
+
 void upgrade_factory_snapshot_bus_acquired_cb(GDBusConnection *connection, const gchar *name, gpointer user_data)
 {
     struct UpgradeFactorySnapshot *ufs = user_data;
@@ -404,8 +458,56 @@ void upgrade_factory_snapshot_name_acquired_cb(GDBusConnection *connection, cons
             "org.sailfishos.sfmf.unpack", NULL, "/", NULL, G_DBUS_SIGNAL_FLAGS_NONE,
             upgrade_factory_snapshot_dbus_signal_cb, ufs, NULL);
 
-    // Kick off task queue processing
-    g_idle_add(upgrade_factory_snapshot_do_next_entry_cb, ufs);
+    GError *error = NULL;
+    GDBusNodeInfo *node_info = g_dbus_node_info_new_for_xml(""
+        "<!DOCTYPE node PUBLIC \"-//freedesktop//DTD D-BUS Object Introspection 1.0//EN\"\n"
+        "  \"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd\">\n"
+        "<node name=\"" UFS_DBUS_PATH "\">\n"
+        "  <interface name=\"" UFS_DBUS_INTERFACE "\">\n"
+        "    <method name=\"Start\">\n"
+        "      <arg name=\"result\" type=\"b\" direction=\"out\" />\n"
+        "    </method>\n"
+        "    <method name=\"GetProgress\">\n"
+        "      <arg name=\"queue_name\" type=\"s\" direction=\"out\" />\n"
+        "      <arg name=\"task_name\" type=\"s\" direction=\"out\" />\n"
+        "      <arg name=\"queue_pos\" type=\"i\" direction=\"out\" />\n"
+        "      <arg name=\"queue_total\" type=\"i\" direction=\"out\" />\n"
+        "      <arg name=\"partition_name\" type=\"s\" direction=\"out\" />\n"
+        "      <arg name=\"partition_pos\" type=\"i\" direction=\"out\" />\n"
+        "      <arg name=\"partition_total\" type=\"i\" direction=\"out\" />\n"
+        "      <arg name=\"message\" type=\"s\" direction=\"out\" />\n"
+        "      <arg name=\"progress\" type=\"i\" direction=\"out\" />\n"
+        "    </method>\n"
+        "    <signal name=\"Progress\">\n"
+        "      <arg name=\"queue_name\" type=\"s\" />\n"
+        "      <arg name=\"task_name\" type=\"s\" />\n"
+        "      <arg name=\"queue_pos\" type=\"i\" />\n"
+        "      <arg name=\"queue_total\" type=\"i\" />\n"
+        "      <arg name=\"partition_name\" type=\"s\" />\n"
+        "      <arg name=\"partition_pos\" type=\"i\" />\n"
+        "      <arg name=\"partition_total\" type=\"i\" />\n"
+        "      <arg name=\"message\" type=\"s\" />\n"
+        "      <arg name=\"progress\" type=\"i\" />\n"
+        "    </signal>\n"
+        "  </interface>\n"
+        "</node>\n"
+    "", &error);
+
+    if (!node_info) {
+        SFMF_FAIL("Could not compile D-Bus XML: %s\n", error->message);
+        g_error_free(error);
+    }
+
+    ufs->object_registration = g_dbus_connection_register_object(ufs->system_bus, UFS_DBUS_PATH,
+            g_dbus_node_info_lookup_interface(node_info, UFS_DBUS_INTERFACE),
+            &upgrade_factory_snapshot_vtable, ufs, NULL, &error);
+
+    if (!ufs->object_registration) {
+        SFMF_FAIL("Could not register object on D-Bus: %s\n", error->message);
+        g_error_free(error);
+    }
+
+    g_dbus_node_info_unref(node_info);
 }
 
 void upgrade_factory_snapshot_name_lost_cb(GDBusConnection *connection, const gchar *name, gpointer user_data)
@@ -451,6 +553,10 @@ void upgrade_factory_snapshot_run(struct UpgradeFactorySnapshot *ufs)
 void upgrade_factory_snapshot_quit(struct UpgradeFactorySnapshot *ufs)
 {
     g_main_loop_unref(ufs->mainloop);
+
+    if (ufs->object_registration) {
+        g_dbus_connection_unregister_object(ufs->system_bus, ufs->object_registration);
+    }
 
     g_bus_unown_name(ufs->own_name);
 
