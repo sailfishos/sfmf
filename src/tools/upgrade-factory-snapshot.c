@@ -38,6 +38,8 @@
 #define UFS_DBUS_INTERFACE "org.sailfishos.sfmf.ufs"
 #define UFS_DBUS_PATH "/"
 
+#define IDLE_TIMEOUT_SEC 60
+
 
 struct DeployTask {
     gchar *name;
@@ -76,8 +78,9 @@ struct UpgradeFactorySnapshot {
     GDBusConnection *system_bus;
     guint own_name;
     guint object_registration;
+    guint idle_timer_source_id;
 
-    gboolean started;
+    gboolean running;
 
     struct DeployTaskQueue *deploy_queue;
     struct DeployTaskQueue *cleanup_queue;
@@ -99,6 +102,7 @@ void upgrade_factory_snapshot_run(struct UpgradeFactorySnapshot *ufs);
 void upgrade_factory_snapshot_quit(struct UpgradeFactorySnapshot *ufs);
 void upgrade_factory_snapshot_broadcast_status(struct UpgradeFactorySnapshot *ufs,
         const char *partition, int progress, const char *message);
+void upgrade_factory_snapshot_schedule_quit(struct UpgradeFactorySnapshot *ufs);
 
 // Callbacks
 void upgrade_factory_snapshot_bus_acquired_cb(GDBusConnection *connection, const gchar *name, gpointer user_data);
@@ -171,6 +175,7 @@ static struct DeployTaskQueue g_cleanup_queue = {
 static struct UpgradeFactorySnapshot g_ufs = {
     NULL,
     NULL,
+    0,
     0,
     0,
 
@@ -262,11 +267,15 @@ void upgrade_factory_snapshot_cleanup_cb(void *user_data)
 {
     struct UpgradeFactorySnapshot *ufs = user_data;
 
+    SFMF_LOG("Running cleanup...\n");
+
     // Make sure the main tasks are not run anymore
     deploy_task_queue_abort(ufs->deploy_queue);
 
     // Run all steps synchronously until we're finished
     while (deploy_task_queue_next(ufs->cleanup_queue, 0));
+
+    SFMF_LOG("Cleanup completed.\n");
 }
 
 int deploy_task_queue_next(struct DeployTaskQueue *queue, int async)
@@ -318,7 +327,8 @@ gboolean upgrade_factory_snapshot_do_next_entry_cb(gpointer user_data)
 void upgrade_factory_snapshot_finished_cb(struct DeployTaskQueue *queue, void *user_data)
 {
     struct UpgradeFactorySnapshot *ufs = user_data;
-    g_main_loop_quit(ufs->mainloop);
+    ufs->running = FALSE;
+    upgrade_factory_snapshot_schedule_quit(ufs);
 }
 
 void upgrade_factory_snapshot_task_done_cb(struct DeployTaskQueue *queue, void *user_data)
@@ -381,6 +391,30 @@ void upgrade_factory_snapshot_broadcast_status(struct UpgradeFactorySnapshot *uf
     }
 }
 
+gboolean upgrade_factory_snapshot_idle_timeout_cb(gpointer user_data)
+{
+    struct UpgradeFactorySnapshot *ufs = user_data;
+
+    if (!ufs->running) {
+        SFMF_DEBUG("Idle timeout reached, quitting\n");
+        g_main_loop_quit(ufs->mainloop);
+    }
+
+    return FALSE;
+}
+
+void upgrade_factory_snapshot_schedule_quit(struct UpgradeFactorySnapshot *ufs)
+{
+    if (ufs->idle_timer_source_id) {
+        g_source_remove(ufs->idle_timer_source_id);
+        ufs->idle_timer_source_id = 0;
+    }
+
+    SFMF_DEBUG("(Re-)Starting idle timer (%d seconds)\n", IDLE_TIMEOUT_SEC);
+    ufs->idle_timer_source_id = g_timeout_add_seconds(IDLE_TIMEOUT_SEC,
+            upgrade_factory_snapshot_idle_timeout_cb, ufs);
+}
+
 void upgrade_factory_snapshot_dbus_signal_cb(GDBusConnection *connection,
         const gchar *sender_name, const gchar *object_path, const gchar *interface_name,
         const gchar *signal_name, GVariant *parameters, gpointer user_data)
@@ -412,33 +446,38 @@ void upgrade_factory_snapshot_method_call_cb(GDBusConnection *connection, const 
         GVariant *parameters, GDBusMethodInvocation *invocation, gpointer user_data)
 {
     struct UpgradeFactorySnapshot *ufs = user_data;
+    GVariant *return_value = NULL;
 
     if (g_strcmp0(object_path, UFS_DBUS_PATH) == 0 && g_strcmp0(interface_name, UFS_DBUS_INTERFACE) == 0) {
         if (g_strcmp0(method_name, "Start") == 0) {
             gboolean result = FALSE;
-            if (!ufs->started) {
+            if (!ufs->running) {
                 g_idle_add(upgrade_factory_snapshot_do_next_entry_cb, ufs);
-                ufs->started = TRUE;
+                ufs->running = TRUE;
                 result = TRUE;
             }
 
-            g_dbus_method_invocation_return_value(invocation, g_variant_new("(b)", result));
-            return;
+            return_value = g_variant_new("(b)", result);
         } else if (g_strcmp0(method_name, "GetProgress") == 0) {
             struct DeployTaskQueue *queue = ufs->deploy_queue;
             struct DeployTask *task = deploy_task_queue_get_current_task(queue);
 
-            g_dbus_method_invocation_return_value(invocation,
-                    g_variant_new("(ssiisiisi)", queue->name,
-                        task->name, queue->current+1, queue->total,
-                        ufs->status.partition ?: "", ufs->status.partition_current+1, ufs->status.partition_total,
-                        ufs->status.message ?: "", ufs->status.progress));
-            return;
+            return_value = g_variant_new("(ssiisiisi)", queue->name,
+                    task->name, queue->current+1, queue->total,
+                    ufs->status.partition ?: "", ufs->status.partition_current+1, ufs->status.partition_total,
+                    ufs->status.message ?: "", ufs->status.progress);
         }
     }
 
-    g_dbus_method_invocation_return_dbus_error(invocation, UFS_DBUS_INTERFACE ".MethodCallError",
-            "Invalid method call");
+    if (return_value) {
+        g_dbus_method_invocation_return_value(invocation, return_value);
+    } else {
+        g_dbus_method_invocation_return_dbus_error(invocation, UFS_DBUS_INTERFACE ".MethodCallError",
+                "Invalid method call");
+    }
+
+    // After each D-Bus method call, reschedule the idle timer
+    upgrade_factory_snapshot_schedule_quit(ufs);
 }
 
 void upgrade_factory_snapshot_bus_acquired_cb(GDBusConnection *connection, const gchar *name, gpointer user_data)
@@ -508,6 +547,9 @@ void upgrade_factory_snapshot_name_acquired_cb(GDBusConnection *connection, cons
     }
 
     g_dbus_node_info_unref(node_info);
+
+    // Schedule idle timer if no calls come in
+    upgrade_factory_snapshot_schedule_quit(ufs);
 }
 
 void upgrade_factory_snapshot_name_lost_cb(GDBusConnection *connection, const gchar *name, gpointer user_data)
@@ -545,9 +587,9 @@ void upgrade_factory_snapshot_init(struct UpgradeFactorySnapshot *ufs)
 
 void upgrade_factory_snapshot_run(struct UpgradeFactorySnapshot *ufs)
 {
-    SFMF_LOG("Deploying snapshot...\n");
+    SFMF_LOG("Running mainloop...\n");
     g_main_loop_run(ufs->mainloop);
-    SFMF_LOG("Done.\n");
+    SFMF_LOG("Main loop exited.\n");
 }
 
 void upgrade_factory_snapshot_quit(struct UpgradeFactorySnapshot *ufs)
