@@ -479,7 +479,15 @@ void upgrade_factory_snapshot_method_call_cb(GDBusConnection *connection, const 
             sfmf_dbus_is_privileged(connection, sender)) {
         if (g_strcmp0(method_name, "Start") == 0) {
             gboolean result = FALSE;
+
             if (!ufs->running) {
+                gchar *release = 0;
+                g_variant_get(parameters, "(s)", &release);
+                if (release && strlen(release)) {
+                    setenv("SSU_SLIPSTREAM_RELEASE", release, 1);
+                }
+                g_free(release);
+
                 g_idle_add(upgrade_factory_snapshot_do_next_entry_cb, ufs);
                 ufs->running = TRUE;
                 result = TRUE;
@@ -494,18 +502,6 @@ void upgrade_factory_snapshot_method_call_cb(GDBusConnection *connection, const 
                     task ? task->name : "", queue->current+1, queue->total,
                     ufs->status.partition ?: "", ufs->status.partition_current+1, ufs->status.partition_total,
                     ufs->status.message ?: "", ufs->status.progress);
-        } else if (g_strcmp0(method_name, "SetRelease") == 0) {
-            gboolean result = FALSE;
-
-            gchar *release = 0;
-            g_variant_get(parameters, "(s)", &release);
-            setenv("SSU_SLIPSTREAM_RELEASE", release, 1);
-            if (g_strcmp0(getenv("SSU_SLIPSTREAM_RELEASE"), release) == 0) {
-                result = TRUE;
-            }
-            g_free(release);
-
-            return_value = g_variant_new("(b)", result);
         }
     }
 
@@ -534,9 +530,6 @@ void upgrade_factory_snapshot_bus_acquired_cb(GDBusConnection *connection, const
         "<node name=\"" UFS_DBUS_PATH "\">\n"
         "  <interface name=\"" UFS_DBUS_INTERFACE "\">\n"
         "    <method name=\"Start\">\n"
-        "      <arg name=\"result\" type=\"b\" direction=\"out\" />\n"
-        "    </method>\n"
-        "    <method name=\"SetRelease\">\n"
         "      <arg name=\"release\" type=\"s\" direction=\"in\" />\n"
         "      <arg name=\"result\" type=\"b\" direction=\"out\" />\n"
         "    </method>\n"
