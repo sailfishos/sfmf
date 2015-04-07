@@ -112,6 +112,7 @@ void upgrade_factory_snapshot_name_acquired_cb(GDBusConnection *connection, cons
 void upgrade_factory_snapshot_name_lost_cb(GDBusConnection *connection, const gchar *name, gpointer user_data);
 void upgrade_factory_snapshot_cleanup_cb(void *user_data);
 gboolean upgrade_factory_snapshot_do_next_entry_cb(gpointer user_data);
+gboolean upgrade_factory_snapshot_delayed_finish_cb(gpointer user_data);
 void upgrade_factory_snapshot_finished_cb(struct DeployTaskQueue *queue, void *user_data);
 void upgrade_factory_snapshot_task_done_cb(struct DeployTaskQueue *queue, void *user_data);
 void upgrade_factory_snapshot_dbus_signal_cb(GDBusConnection *connection,
@@ -353,11 +354,21 @@ gboolean upgrade_factory_snapshot_do_next_entry_cb(gpointer user_data)
     return FALSE;
 }
 
-void upgrade_factory_snapshot_finished_cb(struct DeployTaskQueue *queue, void *user_data)
+gboolean upgrade_factory_snapshot_delayed_finish_cb(gpointer user_data)
 {
     struct UpgradeFactorySnapshot *ufs = user_data;
     upgrade_factory_snapshot_set_running(ufs, FALSE);
     upgrade_factory_snapshot_schedule_quit(ufs);
+    return FALSE;
+}
+
+void upgrade_factory_snapshot_finished_cb(struct DeployTaskQueue *queue, void *user_data)
+{
+    struct UpgradeFactorySnapshot *ufs = user_data;
+
+    // Reset queue in case we need to re-start it later
+    queue->current = -1;
+    g_timeout_add(1000, upgrade_factory_snapshot_delayed_finish_cb, ufs);
 }
 
 void upgrade_factory_snapshot_task_done_cb(struct DeployTaskQueue *queue, void *user_data)
