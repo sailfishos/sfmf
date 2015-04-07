@@ -1,0 +1,5 @@
+[D-BUS Service]
+Interface=org.sailfishos.sfmf.ufs
+Name=org.sailfishos.sfmf.ufs
+Exec=/usr/bin/sfmf-upgrade-factory-snapshot
+User=root

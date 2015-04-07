@@ -494,6 +494,18 @@ void upgrade_factory_snapshot_method_call_cb(GDBusConnection *connection, const 
                     task ? task->name : "", queue->current+1, queue->total,
                     ufs->status.partition ?: "", ufs->status.partition_current+1, ufs->status.partition_total,
                     ufs->status.message ?: "", ufs->status.progress);
+        } else if (g_strcmp0(method_name, "SetRelease") == 0) {
+            gboolean result = FALSE;
+
+            gchar *release = 0;
+            g_variant_get(parameters, "(s)", &release);
+            setenv("SSU_SLIPSTREAM_RELEASE", release, 1);
+            if (g_strcmp0(getenv("SSU_SLIPSTREAM_RELEASE"), release) == 0) {
+                result = TRUE;
+            }
+            g_free(release);
+
+            return_value = g_variant_new("(b)", result);
         }
     }
 
@@ -514,16 +526,6 @@ void upgrade_factory_snapshot_bus_acquired_cb(GDBusConnection *connection, const
 
     ufs->system_bus = connection;
     g_object_ref(ufs->system_bus);
-}
-
-void upgrade_factory_snapshot_name_acquired_cb(GDBusConnection *connection, const gchar *name, gpointer user_data)
-{
-    struct UpgradeFactorySnapshot *ufs = user_data;
-
-    // Connect to D-Bus signals of the unpack utility
-    g_dbus_connection_signal_subscribe(ufs->system_bus, "org.sailfishos.sfmf.unpack",
-            "org.sailfishos.sfmf.unpack", NULL, "/", NULL, G_DBUS_SIGNAL_FLAGS_NONE,
-            upgrade_factory_snapshot_dbus_signal_cb, ufs, NULL);
 
     GError *error = NULL;
     GDBusNodeInfo *node_info = g_dbus_node_info_new_for_xml(""
@@ -532,6 +534,10 @@ void upgrade_factory_snapshot_name_acquired_cb(GDBusConnection *connection, cons
         "<node name=\"" UFS_DBUS_PATH "\">\n"
         "  <interface name=\"" UFS_DBUS_INTERFACE "\">\n"
         "    <method name=\"Start\">\n"
+        "      <arg name=\"result\" type=\"b\" direction=\"out\" />\n"
+        "    </method>\n"
+        "    <method name=\"SetRelease\">\n"
+        "      <arg name=\"release\" type=\"s\" direction=\"in\" />\n"
         "      <arg name=\"result\" type=\"b\" direction=\"out\" />\n"
         "    </method>\n"
         "    <method name=\"GetProgress\">\n"
@@ -575,6 +581,16 @@ void upgrade_factory_snapshot_name_acquired_cb(GDBusConnection *connection, cons
     }
 
     g_dbus_node_info_unref(node_info);
+}
+
+void upgrade_factory_snapshot_name_acquired_cb(GDBusConnection *connection, const gchar *name, gpointer user_data)
+{
+    struct UpgradeFactorySnapshot *ufs = user_data;
+
+    // Connect to D-Bus signals of the unpack utility
+    g_dbus_connection_signal_subscribe(ufs->system_bus, "org.sailfishos.sfmf.unpack",
+            "org.sailfishos.sfmf.unpack", NULL, "/", NULL, G_DBUS_SIGNAL_FLAGS_NONE,
+            upgrade_factory_snapshot_dbus_signal_cb, ufs, NULL);
 
     // Schedule idle timer if no calls come in
     upgrade_factory_snapshot_schedule_quit(ufs);
@@ -647,6 +663,8 @@ void upgrade_factory_snapshot_quit(struct UpgradeFactorySnapshot *ufs)
 int main(int argc, char *argv[])
 {
     struct UpgradeFactorySnapshot *ufs = &g_ufs;
+
+    setenv("PATH", "/usr/bin:/usr/sbin:/bin:/sbin", 1);
 
     upgrade_factory_snapshot_init(ufs);
     upgrade_factory_snapshot_run(ufs);
