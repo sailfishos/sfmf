@@ -104,6 +104,7 @@ void upgrade_factory_snapshot_quit(struct UpgradeFactorySnapshot *ufs);
 void upgrade_factory_snapshot_broadcast_status(struct UpgradeFactorySnapshot *ufs,
         const char *partition, int progress, const char *message);
 void upgrade_factory_snapshot_schedule_quit(struct UpgradeFactorySnapshot *ufs);
+void upgrade_factory_snapshot_set_running(struct UpgradeFactorySnapshot *ufs, gboolean running);
 
 // Callbacks
 void upgrade_factory_snapshot_bus_acquired_cb(GDBusConnection *connection, const gchar *name, gpointer user_data);
@@ -119,6 +120,12 @@ void upgrade_factory_snapshot_dbus_signal_cb(GDBusConnection *connection,
 void upgrade_factory_snapshot_method_call_cb(GDBusConnection *connection, const gchar *sender,
         const gchar *object_path, const gchar *interface_name, const gchar *method_name,
         GVariant *parameters, GDBusMethodInvocation *invocation, gpointer user_data);
+GVariant *upgrade_factory_snapshot_get_property_cb(GDBusConnection *connection, const gchar *sender,
+        const gchar *object_path, const gchar *interface_name, const gchar *property_name,
+        GError **error, gpointer user_data);
+gboolean upgrade_factory_snapshot_set_property_cb(GDBusConnection *connection, const gchar *sender,
+        const gchar *object_path, const gchar *interface_name, const gchar *property_name,
+        GVariant *value, GError **error, gpointer user_data);
 
 
 static gchar *cmd_list[] = { SAILFISH_SNAPSHOT, "list", NULL };
@@ -193,8 +200,8 @@ static struct UpgradeFactorySnapshot g_ufs = {
 
 static const GDBusInterfaceVTable upgrade_factory_snapshot_vtable = {
     upgrade_factory_snapshot_method_call_cb,
-    NULL,
-    NULL,
+    upgrade_factory_snapshot_get_property_cb,
+    upgrade_factory_snapshot_set_property_cb,
 };
 
 
@@ -349,7 +356,7 @@ gboolean upgrade_factory_snapshot_do_next_entry_cb(gpointer user_data)
 void upgrade_factory_snapshot_finished_cb(struct DeployTaskQueue *queue, void *user_data)
 {
     struct UpgradeFactorySnapshot *ufs = user_data;
-    ufs->running = FALSE;
+    upgrade_factory_snapshot_set_running(ufs, FALSE);
     upgrade_factory_snapshot_schedule_quit(ufs);
 }
 
@@ -407,11 +414,8 @@ void upgrade_factory_snapshot_broadcast_status(struct UpgradeFactorySnapshot *uf
             message, progress);
 
     GError *error = NULL;
-    if (!g_dbus_connection_emit_signal(ufs->system_bus, NULL, "/", UFS_DBUS_INTERFACE, "Progress",
-                g_variant_new("(ssiisiisi)", queue->name,
-                    task->name, queue->current+1, queue->total,
-                    ufs->status.partition, ufs->status.partition_current+1, ufs->status.partition_total,
-                    ufs->status.message, ufs->status.progress), &error)) {
+    if (!g_dbus_connection_emit_signal(ufs->system_bus, NULL, UFS_DBUS_PATH, UFS_DBUS_INTERFACE, "ProgressChanged",
+                g_variant_new("()"), &error)) {
         SFMF_WARN("Could not forward progress via D-Bus: %s\n", error->message);
         g_error_free(error);
     }
@@ -439,6 +443,26 @@ void upgrade_factory_snapshot_schedule_quit(struct UpgradeFactorySnapshot *ufs)
     SFMF_DEBUG("(Re-)Starting idle timer (%d seconds)\n", IDLE_TIMEOUT_SEC);
     ufs->idle_timer_source_id = g_timeout_add_seconds(IDLE_TIMEOUT_SEC,
             upgrade_factory_snapshot_idle_timeout_cb, ufs);
+}
+
+void upgrade_factory_snapshot_set_running(struct UpgradeFactorySnapshot *ufs, gboolean running)
+{
+    if (ufs->running != running) {
+        GError *error = NULL;
+
+        GVariantBuilder builder;
+        g_variant_builder_init(&builder, G_VARIANT_TYPE_ARRAY);
+        g_variant_builder_add(&builder, "{sv}", "running", g_variant_new_boolean(running));
+
+        if (!g_dbus_connection_emit_signal(ufs->system_bus, NULL, UFS_DBUS_PATH,
+                    "org.freedesktop.DBus.Properties", "PropertiesChanged",
+                    g_variant_new("(sa{sv}as)", UFS_DBUS_INTERFACE, &builder, NULL), &error)) {
+            SFMF_WARN("Could not emit properties changed signal: %s\n", error->message);
+            g_error_free(error);
+        }
+
+        ufs->running = running;
+    }
 }
 
 void upgrade_factory_snapshot_dbus_signal_cb(GDBusConnection *connection,
@@ -489,7 +513,7 @@ void upgrade_factory_snapshot_method_call_cb(GDBusConnection *connection, const 
                 g_free(release);
 
                 g_idle_add(upgrade_factory_snapshot_do_next_entry_cb, ufs);
-                ufs->running = TRUE;
+                upgrade_factory_snapshot_set_running(ufs, TRUE);
                 result = TRUE;
             }
 
@@ -514,6 +538,36 @@ void upgrade_factory_snapshot_method_call_cb(GDBusConnection *connection, const 
 
     // After each D-Bus method call, reschedule the idle timer
     upgrade_factory_snapshot_schedule_quit(ufs);
+}
+
+GVariant *upgrade_factory_snapshot_get_property_cb(GDBusConnection *connection, const gchar *sender,
+        const gchar *object_path, const gchar *interface_name, const gchar *property_name,
+        GError **error, gpointer user_data)
+{
+    struct UpgradeFactorySnapshot *ufs = user_data;
+
+    if (g_strcmp0(object_path, UFS_DBUS_PATH) == 0 &&
+            g_strcmp0(interface_name, UFS_DBUS_INTERFACE) == 0 &&
+            g_strcmp0(property_name, "running") == 0) {
+        return g_variant_new("b", ufs->running);
+    }
+
+    // TODO: Use G_DBUS_ERROR_UNKNOWN_PROPERTY once we get glib >= 2.41.0
+    g_set_error(error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED, "Cannot get property '%s'", property_name);
+    return NULL;
+}
+
+gboolean upgrade_factory_snapshot_set_property_cb(GDBusConnection *connection, const gchar *sender,
+        const gchar *object_path, const gchar *interface_name, const gchar *property_name,
+        GVariant *value, GError **error, gpointer user_data)
+{
+    struct UpgradeFactorySnapshot *ufs = user_data;
+
+    // TODO: Use G_DBUS_ERROR_PROPERTY_READ_ONLY and G_DBUS_ERROR_UNKNOWN_PROPERTY once we
+    // upgrade to glib >= 2.41.0 that has these new defines (added in glib commit 76d6fd0)
+    g_set_error(error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED, "Cannot set property '%s'", property_name);
+
+    return FALSE;
 }
 
 void upgrade_factory_snapshot_bus_acquired_cb(GDBusConnection *connection, const gchar *name, gpointer user_data)
@@ -544,17 +598,10 @@ void upgrade_factory_snapshot_bus_acquired_cb(GDBusConnection *connection, const
         "      <arg name=\"message\" type=\"s\" direction=\"out\" />\n"
         "      <arg name=\"progress\" type=\"i\" direction=\"out\" />\n"
         "    </method>\n"
-        "    <signal name=\"Progress\">\n"
-        "      <arg name=\"queue_name\" type=\"s\" />\n"
-        "      <arg name=\"task_name\" type=\"s\" />\n"
-        "      <arg name=\"queue_pos\" type=\"i\" />\n"
-        "      <arg name=\"queue_total\" type=\"i\" />\n"
-        "      <arg name=\"partition_name\" type=\"s\" />\n"
-        "      <arg name=\"partition_pos\" type=\"i\" />\n"
-        "      <arg name=\"partition_total\" type=\"i\" />\n"
-        "      <arg name=\"message\" type=\"s\" />\n"
-        "      <arg name=\"progress\" type=\"i\" />\n"
+        "    <signal name=\"ProgressChanged\">\n"
         "    </signal>\n"
+        "    <property name=\"running\" type=\"b\" access=\"read\">\n"
+        "    </property>\n"
         "  </interface>\n"
         "</node>\n"
     "", &error);
