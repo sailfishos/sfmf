@@ -11,6 +11,7 @@ Source0:       %{name}-%{version}.tar.gz
 BuildRequires: zlib-devel
 BuildRequires: zlib-static
 BuildRequires: pkgconfig(libcurl)
+BuildRequires: pkgconfig(glib-2.0)
 Requires:      %{name}-pack = %{version}
 Requires:      %{name}-deploy = %{version}
 Requires:      %{name}-dump = %{version}
