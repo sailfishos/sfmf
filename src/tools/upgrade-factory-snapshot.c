@@ -242,7 +242,6 @@ void deploy_task_queue_run_sync(struct DeployTaskQueue *queue)
         deploy_task_handle_exit_status(task, exit_status);
     } else {
         SFMF_FAIL_AND_EXIT("Failed to run command: %s\n", error->message);
-        g_error_free(error);
     }
 }
 
@@ -282,7 +281,6 @@ void deploy_task_queue_run_async(struct DeployTaskQueue *queue)
     if (!g_spawn_async(NULL, task->cmd, NULL, G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD |
                 G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL, NULL, queue, &pid, &error)) {
         SFMF_FAIL_AND_EXIT("Failed to run command: %s\n", error->message);
-        g_error_free(error);
     }
 
     g_child_watch_add(pid, deploy_task_queue_on_subprocess_finished_cb, queue);
@@ -613,7 +611,6 @@ void upgrade_factory_snapshot_bus_acquired_cb(GDBusConnection *connection, const
 
     if (!node_info) {
         SFMF_FAIL_AND_EXIT("Could not compile D-Bus XML: %s\n", error->message);
-        g_error_free(error);
     }
 
     ufs->object_registration = g_dbus_connection_register_object(ufs->system_bus, UFS_DBUS_PATH,
@@ -622,7 +619,6 @@ void upgrade_factory_snapshot_bus_acquired_cb(GDBusConnection *connection, const
 
     if (!ufs->object_registration) {
         SFMF_FAIL_AND_EXIT("Could not register object on D-Bus: %s\n", error->message);
-        g_error_free(error);
     }
 
     g_dbus_node_info_unref(node_info);

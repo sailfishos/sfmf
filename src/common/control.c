@@ -148,7 +148,6 @@ void sfmf_control_init(struct SFMF_Control_Callbacks *callbacks, void *user_data
     "", &error);
     if (!node_info) {
         SFMF_FAIL_AND_EXIT("Could not compile D-Bus XML: %s\n", error->message);
-        g_error_free(error);
     } else {
         g.object_registration = g_dbus_connection_register_object(g.connection, "/",
                 g_dbus_node_info_lookup_interface(node_info, SFMF_DBUS_INTERFACE),
@@ -157,7 +156,6 @@ void sfmf_control_init(struct SFMF_Control_Callbacks *callbacks, void *user_data
 
     if (!g.object_registration) {
         SFMF_FAIL_AND_EXIT("Could not register object on D-Bus: %s\n", error->message);
-        g_error_free(error);
     }
 
     g_dbus_node_info_unref(node_info);
