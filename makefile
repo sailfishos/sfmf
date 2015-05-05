@@ -44,8 +44,8 @@ sfmf-%: src/tools/%.o $(STATIC_LIB)
 install: $(TOOLS)
 	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)/etc/dbus-1/system.d $(DESTDIR)$(PREFIX)/share/dbus-1/system-services/
 	install -m755 $(TOOLS) $(SCRIPTS) $(DESTDIR)$(PREFIX)/bin/
-	install -m644 dbus/org.sailfishos.sfmf.conf $(DESTDIR)/etc/dbus-1/system.d/
-	install -m644 dbus/org.sailfishos.sfmf.ufs.service $(DESTDIR)$(PREFIX)/share/dbus-1/system-services/
+	install -m644 dbus/org.sailfishos.slipstream.conf $(DESTDIR)/etc/dbus-1/system.d/
+	install -m644 dbus/org.sailfishos.slipstream.upgrade.service $(DESTDIR)$(PREFIX)/share/dbus-1/system-services/
 
 clean:
 	rm -f $(TOOLS) $(STATIC_LIB) $(COMMON_OBJ) $(TOOLS_OBJ)

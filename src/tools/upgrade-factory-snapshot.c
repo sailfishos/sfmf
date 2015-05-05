@@ -35,8 +35,8 @@
 #define FACTORY_RENAME "factory-old"
 #define SNAPSHOT_NAME "factory-slipstream-tmp"
 
-#define UFS_DBUS_NAME "org.sailfishos.sfmf.ufs"
-#define UFS_DBUS_INTERFACE "org.sailfishos.sfmf.ufs"
+#define UFS_DBUS_NAME "org.sailfishos.slipstream.upgrade"
+#define UFS_DBUS_INTERFACE "org.sailfishos.slipstream.upgrade"
 #define UFS_DBUS_PATH "/"
 
 #define IDLE_TIMEOUT_SEC 60
@@ -633,8 +633,8 @@ void upgrade_factory_snapshot_name_acquired_cb(GDBusConnection *connection, cons
     struct UpgradeFactorySnapshot *ufs = user_data;
 
     // Connect to D-Bus signals of the unpack utility
-    g_dbus_connection_signal_subscribe(ufs->system_bus, "org.sailfishos.sfmf.unpack",
-            "org.sailfishos.sfmf.unpack", NULL, "/", NULL, G_DBUS_SIGNAL_FLAGS_NONE,
+    g_dbus_connection_signal_subscribe(ufs->system_bus, "org.sailfishos.slipstream.unpack",
+            "org.sailfishos.slipstream.unpack", NULL, "/", NULL, G_DBUS_SIGNAL_FLAGS_NONE,
             upgrade_factory_snapshot_dbus_signal_cb, ufs, NULL);
 
     // Schedule idle timer if no calls come in

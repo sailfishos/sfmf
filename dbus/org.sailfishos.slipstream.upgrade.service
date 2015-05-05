@@ -1,0 +1,5 @@
+[D-BUS Service]
+Interface=org.sailfishos.slipstream.upgrade
+Name=org.sailfishos.slipstream.upgrade
+Exec=/usr/bin/sfmf-upgrade-factory-snapshot
+User=root

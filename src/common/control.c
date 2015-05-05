@@ -25,8 +25,8 @@
 #include <gio/gio.h>
 
 
-#define SFMF_DBUS_NAME "org.sailfishos.sfmf.unpack"
-#define SFMF_DBUS_INTERFACE "org.sailfishos.sfmf.unpack"
+#define SFMF_DBUS_NAME "org.sailfishos.slipstream.unpack"
+#define SFMF_DBUS_INTERFACE "org.sailfishos.slipstream.unpack"
 #define SFMF_DBUS_PATH "/"
 
 
