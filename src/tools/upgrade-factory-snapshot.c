@@ -211,7 +211,7 @@ void deploy_task_handle_exit_status(struct DeployTask *task, int exit_status)
     GError *error = NULL;
     if (!g_spawn_check_exit_status(exit_status, &error)) {
         if (task->checked) {
-            SFMF_FAIL("Failed to run command: %s\n", error->message);
+            SFMF_FAIL_AND_EXIT("Failed to run command: %s\n", error->message);
         } else {
             SFMF_WARN("Failure (ignored): %s\n", error->message);
         }
@@ -233,7 +233,7 @@ void deploy_task_queue_run_sync(struct DeployTaskQueue *queue)
     struct DeployTask *task = deploy_task_queue_get_current_task(queue);
 
     if (!task) {
-        SFMF_FAIL("Current task is invalid\n");
+        SFMF_FAIL_AND_EXIT("Current task is invalid\n");
     }
 
     gint exit_status = 0;
@@ -241,7 +241,7 @@ void deploy_task_queue_run_sync(struct DeployTaskQueue *queue)
     if (g_spawn_sync(NULL, task->cmd, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL, &exit_status, &error)) {
         deploy_task_handle_exit_status(task, exit_status);
     } else {
-        SFMF_FAIL("Failed to run command: %s\n", error->message);
+        SFMF_FAIL_AND_EXIT("Failed to run command: %s\n", error->message);
         g_error_free(error);
     }
 }
@@ -252,7 +252,7 @@ void deploy_task_queue_on_subprocess_finished_cb(GPid pid, gint status, gpointer
     struct DeployTask *task = deploy_task_queue_get_current_task(queue);
 
     if (!task) {
-        SFMF_FAIL("Current task is invalid\n");
+        SFMF_FAIL_AND_EXIT("Current task is invalid\n");
     }
 
     g_spawn_close_pid(pid);
@@ -271,7 +271,7 @@ void deploy_task_queue_run_async(struct DeployTaskQueue *queue)
     struct DeployTask *task = deploy_task_queue_get_current_task(queue);
 
     if (!task) {
-        SFMF_FAIL("Current task is invalid\n");
+        SFMF_FAIL_AND_EXIT("Current task is invalid\n");
     }
 
     struct UpgradeFactorySnapshot *ufs = queue->callback_user_data;
@@ -281,7 +281,7 @@ void deploy_task_queue_run_async(struct DeployTaskQueue *queue)
     GError *error = NULL;
     if (!g_spawn_async(NULL, task->cmd, NULL, G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD |
                 G_SPAWN_STDOUT_TO_DEV_NULL | G_SPAWN_STDERR_TO_DEV_NULL, NULL, queue, &pid, &error)) {
-        SFMF_FAIL("Failed to run command: %s\n", error->message);
+        SFMF_FAIL_AND_EXIT("Failed to run command: %s\n", error->message);
         g_error_free(error);
     }
 
@@ -313,7 +313,7 @@ int deploy_task_queue_next(struct DeployTaskQueue *queue, int async)
         struct DeployTask *task = deploy_task_queue_get_current_task(queue);
 
         if (!task) {
-            SFMF_FAIL("Current task is invalid\n");
+            SFMF_FAIL_AND_EXIT("Current task is invalid\n");
         }
 
         if (task->cmd) {
@@ -384,7 +384,7 @@ void upgrade_factory_snapshot_broadcast_status(struct UpgradeFactorySnapshot *uf
     struct DeployTask *task = deploy_task_queue_get_current_task(queue);
 
     if (!task) {
-        SFMF_FAIL("Current task is invalid\n");
+        SFMF_FAIL_AND_EXIT("Current task is invalid\n");
     }
 
     if (ufs->status.partition) {
@@ -612,7 +612,7 @@ void upgrade_factory_snapshot_bus_acquired_cb(GDBusConnection *connection, const
     "", &error);
 
     if (!node_info) {
-        SFMF_FAIL("Could not compile D-Bus XML: %s\n", error->message);
+        SFMF_FAIL_AND_EXIT("Could not compile D-Bus XML: %s\n", error->message);
         g_error_free(error);
     }
 
@@ -621,7 +621,7 @@ void upgrade_factory_snapshot_bus_acquired_cb(GDBusConnection *connection, const
             &upgrade_factory_snapshot_vtable, ufs, NULL, &error);
 
     if (!ufs->object_registration) {
-        SFMF_FAIL("Could not register object on D-Bus: %s\n", error->message);
+        SFMF_FAIL_AND_EXIT("Could not register object on D-Bus: %s\n", error->message);
         g_error_free(error);
     }
 
@@ -646,9 +646,9 @@ void upgrade_factory_snapshot_name_lost_cb(GDBusConnection *connection, const gc
     struct UpgradeFactorySnapshot *ufs = user_data;
 
     if (!connection) {
-        SFMF_FAIL("Could not establish D-Bus connection\n");
+        SFMF_FAIL_AND_EXIT("Could not establish D-Bus connection\n");
     } else {
-        SFMF_FAIL("D-Bus name lost: '%s'\n", name);
+        SFMF_FAIL_AND_EXIT("D-Bus name lost: '%s'\n", name);
     }
 }
 

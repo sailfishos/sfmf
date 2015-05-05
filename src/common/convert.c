@@ -254,12 +254,12 @@ int convert_url_fp(const char *url, FILE *out, enum ConvertFlags flags)
     }
 
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != 0) {
-        SFMF_FAIL("Could not init cURL\n");
+        SFMF_FAIL_AND_EXIT("Could not init cURL\n");
     }
 
     CURL *curl = curl_easy_init();
     if (curl == NULL) {
-        SFMF_FAIL("Could not init cURL-easy\n");
+        SFMF_FAIL_AND_EXIT("Could not init cURL-easy\n");
     }
 
     SFMF_DEBUG("Download %s\n", url);
@@ -284,7 +284,7 @@ int convert_url_fp(const char *url, FILE *out, enum ConvertFlags flags)
 
     CURLcode res = curl_easy_perform(curl);
     if (res != CURLE_OK) {
-        SFMF_FAIL("Could not download %s: %s\n", url, curl_easy_strerror(res));
+        SFMF_FAIL_AND_EXIT("Could not download %s: %s\n", url, curl_easy_strerror(res));
     }
 
     curl_easy_cleanup(curl);

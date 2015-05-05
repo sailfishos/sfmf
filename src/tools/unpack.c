@@ -177,7 +177,7 @@ static error_t parse_opt(int key, char *arg, struct argp_state *state)
                     if (file_exists(opts->filename)) {
                         SFMF_LOG("Using %s as manifest file\n", opts->filename);
                     } else {
-                        SFMF_FAIL("File not found: %s\n", opts->filename);
+                        SFMF_FAIL_AND_EXIT("File not found: %s\n", opts->filename);
                     }
                 } else {
                     // We do need a manifest filename
@@ -333,7 +333,7 @@ static char *download_payload_file(struct UnpackOptions *opts, const char *filen
 
     if (!file_exists(dest_file)) {
         if (opts->offline_mode) {
-            SFMF_FAIL("Need to download %s, but offline mode requested.\n", source_file);
+            SFMF_FAIL_AND_EXIT("Need to download %s, but offline mode requested.\n", source_file);
         }
 
         SFMF_LOG("Downloading: %s\n", source_file);
@@ -345,7 +345,7 @@ static char *download_payload_file(struct UnpackOptions *opts, const char *filen
 #if defined(USE_LIBCURL)
             FILE *fp = fopen(dest_file, "w");
             if (fp == NULL) {
-                SFMF_FAIL("Failed to create '%s'\n", dest_file);
+                SFMF_FAIL_AND_EXIT("Failed to create '%s'\n", dest_file);
             }
             int res = convert_url_fp(source_file, fp, CONVERT_FLAG_NONE);
             assert(res == 0);
@@ -355,16 +355,16 @@ static char *download_payload_file(struct UnpackOptions *opts, const char *filen
             if (pid == 0) {
                 char * const args[] = { "curl", "-o", dest_file, source_file, NULL };
                 if (execvp("curl", args) == -1) {
-                    SFMF_FAIL("Could not execute curl: %s\n", strerror(errno));
+                    SFMF_FAIL_AND_EXIT("Could not execute curl: %s\n", strerror(errno));
                 }
             }
 
             int res = 0;
             if (waitpid(pid, &res, 0) != pid) {
-                SFMF_FAIL("Could not wait for curl exit status: %s\n", strerror(errno));
+                SFMF_FAIL_AND_EXIT("Could not wait for curl exit status: %s\n", strerror(errno));
             }
             if (WIFEXITED(res) && WEXITSTATUS(res) != 0) {
-                SFMF_FAIL("curl exited with non-zero exit status: %d\n", res);
+                SFMF_FAIL_AND_EXIT("curl exited with non-zero exit status: %d\n", res);
             }
 #endif
         } else {
@@ -423,7 +423,7 @@ void write_blob_data(struct UnpackOptions *opts, struct SFMF_FileEntry *entry, s
 {
     FILE *fp = fopen(filename, "wb");
     if (fp == NULL) {
-        SFMF_FAIL("Failed to create '%s'\n", filename);
+        SFMF_FAIL_AND_EXIT("Failed to create '%s'\n", filename);
     }
 
     switch (blob->type) {
@@ -522,7 +522,7 @@ void write_blob_data(struct UnpackOptions *opts, struct SFMF_FileEntry *entry, s
             int res = sfmf_filehash_format(&hash, tmp, sizeof(tmp));
             assert(res);
 
-            SFMF_FAIL("File failed hash check: %s, got: %s\n",
+            SFMF_FAIL_AND_EXIT("File failed hash check: %s, got: %s\n",
                     filename, tmp);
         } else {
             //SFMF_LOG("File passed hash check: %s\n", filename);
@@ -651,7 +651,7 @@ static void unpack_dirstack_entry_pop(struct DirStackEntry *entry)
     tv[0].tv_usec = tv[1].tv_usec = 0;
     int res = lutimes(entry->path, tv);
     if (res != 0) {
-        SFMF_FAIL("Failed to set mtime of '%s' to %ld: %s\n",
+        SFMF_FAIL_AND_EXIT("Failed to set mtime of '%s' to %ld: %s\n",
                 entry->path, user_data->mtime, strerror(errno));
     }
 }
@@ -764,7 +764,7 @@ static void unpack_write_entry(struct UnpackOptions *opts, struct UnpackFileEntr
         case ENTRY_DIRECTORY:
             res = mkdir(e->target_filename, 0755);
             if (res != 0 && !(strcmp(opts->filename_table + e->entry.filename_offset, "/") == 0 && errno == EEXIST)) {
-                SFMF_FAIL("Failed to create '%s': %s\n", e->target_filename, strerror(errno));
+                SFMF_FAIL_AND_EXIT("Failed to create '%s': %s\n", e->target_filename, strerror(errno));
             }
             break;
         case ENTRY_FILE:
@@ -785,7 +785,7 @@ static void unpack_write_entry(struct UnpackOptions *opts, struct UnpackFileEntr
                 res = symlink(symlink_target, e->target_filename);
                 free(symlink_target);
                 if (res != 0) {
-                    SFMF_FAIL("Failed to create '%s': %s\n", e->target_filename, strerror(errno));
+                    SFMF_FAIL_AND_EXIT("Failed to create '%s': %s\n", e->target_filename, strerror(errno));
                 }
             }
             break;
@@ -793,13 +793,13 @@ static void unpack_write_entry(struct UnpackOptions *opts, struct UnpackFileEntr
         case ENTRY_BLOCK:
             res = mknod(e->target_filename, e->entry.mode, e->entry.dev);
             if (res != 0) {
-                SFMF_FAIL("Failed to create '%s': %s\n", e->target_filename, strerror(errno));
+                SFMF_FAIL_AND_EXIT("Failed to create '%s': %s\n", e->target_filename, strerror(errno));
             }
             break;
         case ENTRY_FIFO:
             res = mkfifo(e->target_filename, 0644);
             if (res != 0) {
-                SFMF_FAIL("Failed to create '%s': %s\n", e->target_filename, strerror(errno));
+                SFMF_FAIL_AND_EXIT("Failed to create '%s': %s\n", e->target_filename, strerror(errno));
             }
             break;
         case ENTRY_HARDLINK:
@@ -814,7 +814,7 @@ static void unpack_write_entry(struct UnpackOptions *opts, struct UnpackFileEntr
                 sprintf(hfn, "%s%s", opts->outputdir, hfilename);
                 int res = link(hfn, e->target_filename);
                 if (res != 0) {
-                    SFMF_FAIL("Failed to create '%s' (from '%s'): %s\n", e->target_filename,
+                    SFMF_FAIL_AND_EXIT("Failed to create '%s' (from '%s'): %s\n", e->target_filename,
                             hfn, strerror(errno));
                 }
                 free(hfn);
@@ -832,7 +832,7 @@ static void unpack_set_permissions(struct UnpackOptions *opts, struct UnpackFile
     // pointed-to filesystem entry instead)
     int res = lchown(e->target_filename, e->entry.uid, e->entry.gid);
     if (res != 0) {
-        SFMF_FAIL("Could not change owner/group of '%s' to %d/%d: %s\n",
+        SFMF_FAIL_AND_EXIT("Could not change owner/group of '%s' to %d/%d: %s\n",
                 e->target_filename, e->entry.uid, e->entry.gid, strerror(errno));
     }
 
@@ -844,7 +844,7 @@ static void unpack_set_permissions(struct UnpackOptions *opts, struct UnpackFile
     if (e->entry.type != ENTRY_SYMLINK) {
         res = chmod(e->target_filename, e->entry.mode);
         if (res != 0) {
-            SFMF_FAIL("Could not change permission of '%s' to %o: %s\n",
+            SFMF_FAIL_AND_EXIT("Could not change permission of '%s' to %o: %s\n",
                     e->target_filename, e->entry.mode, strerror(errno));
         }
     }
@@ -864,7 +864,7 @@ static void unpack_set_permissions(struct UnpackOptions *opts, struct UnpackFile
         tv[0].tv_usec = tv[1].tv_usec = 0;
         res = lutimes(e->target_filename, tv);
         if (res != 0) {
-            SFMF_FAIL("Failed to set mtime of '%s' to %ld: %s\n",
+            SFMF_FAIL_AND_EXIT("Failed to set mtime of '%s' to %ld: %s\n",
                     e->target_filename, e->entry.mtime, strerror(errno));
         }
     }
@@ -988,7 +988,7 @@ static void foreach_unpack_entry(struct UnpackOptions *opts, void (*f)(struct Un
         struct UnpackFileEntry *e = &(opts->fentries[i]);
 
         if (opts->abort) {
-            SFMF_FAIL("Operation aborted via D-Bus\n");
+            SFMF_FAIL_AND_EXIT("Operation aborted via D-Bus\n");
         }
 
         const char *filename = opts->filename_table + e->entry.filename_offset;

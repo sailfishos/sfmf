@@ -30,6 +30,6 @@ long logging_get_ticks();
 #define SFMF_WARN(fmt, ...) fprintf(stderr, "[%6ld] [WARN] " fmt, logging_get_ticks(), ##__VA_ARGS__)
 #define SFMF_DEBUG(fmt, ...) if (sfmf_policy_get_log_debug()) fprintf(stderr, "[%6ld] [DEBUG] " fmt, logging_get_ticks(), ##__VA_ARGS__)
 
-#define SFMF_FAIL(fmt, ...) do { fprintf(stderr, "[%6ld] [ERROR] " fmt, logging_get_ticks(), ##__VA_ARGS__); exit(1); } while(0)
+#define SFMF_FAIL_AND_EXIT(fmt, ...) do { fprintf(stderr, "[%6ld] [ERROR] " fmt, logging_get_ticks(), ##__VA_ARGS__); exit(1); } while(0)
 
 #endif /* SFMF_LOGGING_H */

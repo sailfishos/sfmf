@@ -67,9 +67,9 @@ static void sfmf_control_name_lost_cb(GDBusConnection *connection, const gchar *
     struct SFMF_Control_Private *priv = user_data;
 
     if (!connection) {
-        SFMF_FAIL("Could not establish D-Bus connection\n");
+        SFMF_FAIL_AND_EXIT("Could not establish D-Bus connection\n");
     } else {
-        SFMF_FAIL("D-Bus name lost: '%s'\n", name);
+        SFMF_FAIL_AND_EXIT("D-Bus name lost: '%s'\n", name);
     }
 
     priv->name_acquired = FALSE;
@@ -147,7 +147,7 @@ void sfmf_control_init(struct SFMF_Control_Callbacks *callbacks, void *user_data
         "</node>\n"
     "", &error);
     if (!node_info) {
-        SFMF_FAIL("Could not compile D-Bus XML: %s\n", error->message);
+        SFMF_FAIL_AND_EXIT("Could not compile D-Bus XML: %s\n", error->message);
         g_error_free(error);
     } else {
         g.object_registration = g_dbus_connection_register_object(g.connection, "/",
@@ -156,7 +156,7 @@ void sfmf_control_init(struct SFMF_Control_Callbacks *callbacks, void *user_data
     }
 
     if (!g.object_registration) {
-        SFMF_FAIL("Could not register object on D-Bus: %s\n", error->message);
+        SFMF_FAIL_AND_EXIT("Could not register object on D-Bus: %s\n", error->message);
         g_error_free(error);
     }
 

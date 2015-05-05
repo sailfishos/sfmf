@@ -104,7 +104,7 @@ void filelist_append(struct FileList *list, const char *filename, enum FileListF
 
     entry->filename = strdup(filename);
     if (lstat(entry->filename, &entry->st) != 0) {
-        SFMF_FAIL("Can't stat %s: %s\n", entry->filename, strerror(errno));
+        SFMF_FAIL_AND_EXIT("Can't stat %s: %s\n", entry->filename, strerror(errno));
     }
 
     if (S_ISLNK(entry->st.st_mode)) {
@@ -131,7 +131,7 @@ void filelist_append(struct FileList *list, const char *filename, enum FileListF
             list->length--;
             return;
         } else {
-            SFMF_FAIL("Unsupported type for %s\n", filename);
+            SFMF_FAIL_AND_EXIT("Unsupported type for %s\n", filename);
         }
     }
 
