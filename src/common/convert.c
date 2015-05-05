@@ -38,7 +38,7 @@
 
 
 struct ConvertIO {
-    size_t (*transfer)(char *buffer, size_t len, void *user_data);
+    ssize_t (*transfer)(char *buffer, size_t len, void *user_data);
     void *user_data;
     size_t total;
 };
@@ -62,40 +62,40 @@ struct BufferConvertContextSource {
 // Number of blocks transferred between mainloop pumps
 #define PUMP_MAINLOOP_EVERY_X_BLOCKS 300
 
-static size_t convert_io_transfer(struct ConvertIO *io, char *buffer, size_t len)
+static ssize_t convert_io_transfer(struct ConvertIO *io, char *buffer, size_t len)
 {
     static int iterations = 0;
-    if (iterations++ >= PUMP_MAINLOOP_EVERY_X_BLOCKS) {
+    if (++iterations >= PUMP_MAINLOOP_EVERY_X_BLOCKS) {
         // Pump the mainloop after every X blocks transferred; should give
         // good responsiveness while not slowing down data transfer
         sfmf_control_process();
         iterations = 0;
     }
 
-    size_t res = io->transfer(buffer, len, io->user_data);
+    ssize_t res = io->transfer(buffer, len, io->user_data);
     if (res >= 0) {
         io->total += res;
     }
     return res;
 }
 
-static size_t convert_io_read(struct ConvertContext *ctx, char *buffer, size_t len)
+static ssize_t convert_io_read(struct ConvertContext *ctx, char *buffer, size_t len)
 {
     return convert_io_transfer(ctx->read, buffer, len);
 }
 
-static size_t convert_io_write(struct ConvertContext *ctx, char *buffer, size_t len)
+static ssize_t convert_io_write(struct ConvertContext *ctx, char *buffer, size_t len)
 {
     return convert_io_transfer(ctx->write, buffer, len);
 }
 
-static size_t duplicate_convert_io_read(char *buffer, size_t len, void *user_data)
+static ssize_t duplicate_convert_io_read(char *buffer, size_t len, void *user_data)
 {
     struct DuplicateConvertIOContext *ctx = user_data;
 
-    size_t res = convert_io_transfer(ctx->master, buffer, len); // Read from master
+    ssize_t res = convert_io_transfer(ctx->master, buffer, len); // Read from master
     // Consumer MUST NOT modify the buffer it is given
-    size_t res2 = convert_io_transfer(ctx->slave, buffer, res); // Write to slave (but only as much bytes as we read before)
+    ssize_t res2 = convert_io_transfer(ctx->slave, buffer, res); // Write to slave (but only as much bytes as we read before)
 
     assert(res == res2);
 
@@ -105,10 +105,10 @@ static size_t duplicate_convert_io_read(char *buffer, size_t len, void *user_dat
 void do_convert_uncompressed(struct ConvertContext *ctx)
 {
     char buf[DEFAULT_BUFFER_SIZE];
-    size_t len;
+    ssize_t len;
 
     while ((len = convert_io_read(ctx, buf, sizeof(buf)))) {
-        size_t res = convert_io_write(ctx, buf, len);
+        ssize_t res = convert_io_write(ctx, buf, len);
         assert(res == len);
     }
 }
@@ -125,7 +125,7 @@ void do_convert_zcompressed(struct ConvertContext *ctx)
     int res = deflateInit(&stream, Z_DEFAULT_COMPRESSION);
     assert(res == Z_OK);
 
-    size_t read_bytes = 0;
+    ssize_t read_bytes = 0;
     while ((read_bytes = convert_io_read(ctx, tmp_in, buffer_size)) != 0) {
         stream.next_in = (unsigned char *)tmp_in;
         stream.avail_in = read_bytes;
@@ -136,8 +136,8 @@ void do_convert_zcompressed(struct ConvertContext *ctx)
             stream.avail_out = buffer_size;
             res = deflate(&stream, 0);
             assert(res == Z_OK);
-            size_t len = (buffer_size - stream.avail_out);
-            size_t res = convert_io_write(ctx, tmp_out, len);
+            ssize_t len = (buffer_size - stream.avail_out);
+            ssize_t res = convert_io_write(ctx, tmp_out, len);
             assert(res == len);
         } while (stream.avail_in > 0);
     }
@@ -148,8 +148,8 @@ void do_convert_zcompressed(struct ConvertContext *ctx)
         stream.avail_out = buffer_size;
         res = deflate(&stream, Z_FINISH);
         assert(res == Z_OK || res == Z_STREAM_END);
-        size_t len = (buffer_size - stream.avail_out);
-        size_t res = convert_io_write(ctx, tmp_out, len);
+        ssize_t len = (buffer_size - stream.avail_out);
+        ssize_t res = convert_io_write(ctx, tmp_out, len);
         assert(res == len);
     } while (res != Z_STREAM_END);
 
@@ -168,7 +168,7 @@ void do_convert_zdecompress(struct ConvertContext *ctx)
     int res = inflateInit(&stream);
     assert(res == Z_OK);
 
-    size_t read_bytes = 0;
+    ssize_t read_bytes = 0;
     while ((read_bytes = convert_io_read(ctx, tmp_in, buffer_size)) != 0) {
         stream.next_in = (unsigned char *)tmp_in;
         stream.avail_in = read_bytes;
@@ -179,8 +179,8 @@ void do_convert_zdecompress(struct ConvertContext *ctx)
             stream.avail_out = buffer_size;
             res = inflate(&stream, 0);
             assert(res == Z_OK || res == Z_STREAM_END);
-            size_t len = (buffer_size - stream.avail_out);
-            size_t res = convert_io_write(ctx, tmp_out, len);
+            ssize_t len = (buffer_size - stream.avail_out);
+            ssize_t res = convert_io_write(ctx, tmp_out, len);
             assert(res == len);
         } while (stream.avail_in > 0);
     }
@@ -191,21 +191,21 @@ void do_convert_zdecompress(struct ConvertContext *ctx)
         stream.avail_out = buffer_size;
         res = inflate(&stream, Z_FINISH);
         assert(res == Z_OK || res == Z_STREAM_END);
-        size_t len = (buffer_size - stream.avail_out);
-        size_t res = convert_io_write(ctx, tmp_out, len);
+        ssize_t len = (buffer_size - stream.avail_out);
+        ssize_t res = convert_io_write(ctx, tmp_out, len);
         assert(res == len);
     } while (res != Z_STREAM_END);
 
     inflateEnd(&stream);
 }
 
-size_t file_convert_context_read(char *buffer, size_t len, void *user_data)
+ssize_t file_convert_context_read(char *buffer, size_t len, void *user_data)
 {
     FILE *fp = user_data;
     return fread(buffer, 1, len, fp);
 }
 
-size_t buffer_convert_context_read(char *buffer, size_t len, void *user_data)
+ssize_t buffer_convert_context_read(char *buffer, size_t len, void *user_data)
 {
     struct BufferConvertContextSource *source = user_data;
 
@@ -222,7 +222,7 @@ size_t buffer_convert_context_read(char *buffer, size_t len, void *user_data)
     return len;
 }
 
-size_t file_convert_context_write(char *buffer, size_t len, void *user_data)
+ssize_t file_convert_context_write(char *buffer, size_t len, void *user_data)
 {
     FILE *fp = user_data;
     return fwrite(buffer, 1, len, fp);
@@ -403,7 +403,7 @@ int convert_buffer_fp(char *buf, size_t len, FILE *outfile, enum ConvertFlags fl
     return run_conversion(&read_io, &write_io, flags);
 }
 
-static size_t sha1_convert_context_write(char *buf, size_t len, void *user_data)
+static ssize_t sha1_convert_context_write(char *buf, size_t len, void *user_data)
 {
     SHA1_CTX *ctx = user_data;
 
@@ -417,7 +417,7 @@ static size_t sha1_convert_context_write(char *buf, size_t len, void *user_data)
     return len;
 }
 
-static size_t null_convert_context_write(char *buf, size_t len, void *user_data)
+static ssize_t null_convert_context_write(char *buf, size_t len, void *user_data)
 {
     // Not doing any actual writing here (we just count the zbytes)
     return len;
