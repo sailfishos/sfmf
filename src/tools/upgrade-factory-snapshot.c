@@ -482,18 +482,13 @@ void upgrade_factory_snapshot_dbus_signal_cb(GDBusConnection *connection,
 {
     struct UpgradeFactorySnapshot *ufs = user_data;
 
-    gchar *args = g_variant_print(parameters, TRUE);
-    //SFMF_DEBUG("dbus: sender=%s path=%s signal=%s.%s%s\n", sender_name, object_path,
-    //        interface_name, signal_name, args);
-    g_free(args);
-
     if (strcmp(signal_name, "Progress") == 0) {
-        gchar *partition;
-        int progress;
-        gchar *message;
+        gchar *partition = NULL;
+        int progress = 0;
+        gchar *message = NULL;
         g_variant_get(parameters, "(sis)", &partition, &progress, &message);
 
-        upgrade_factory_snapshot_broadcast_status(ufs, partition, progress, message);
+        upgrade_factory_snapshot_broadcast_status(ufs, partition ?: "", progress, message ?: "");
 
         g_free(partition);
         g_free(message);
@@ -585,8 +580,7 @@ void upgrade_factory_snapshot_bus_acquired_cb(GDBusConnection *connection, const
 {
     struct UpgradeFactorySnapshot *ufs = user_data;
 
-    ufs->system_bus = connection;
-    g_object_ref(ufs->system_bus);
+    ufs->system_bus = g_object_ref(connection);
 
     GError *error = NULL;
     GDBusNodeInfo *node_info = g_dbus_node_info_new_for_xml(""
@@ -666,9 +660,17 @@ void upgrade_factory_snapshot_init(struct UpgradeFactorySnapshot *ufs)
     ufs->deploy_queue->callback_user_data = ufs;
     ufs->cleanup_queue->callback_user_data = ufs;
 
-    for (ufs->deploy_queue->total=0; ufs->deploy_queue->tasks[ufs->deploy_queue->total].cmd; ufs->deploy_queue->total++);
-    for (ufs->cleanup_queue->total=0; ufs->cleanup_queue->tasks[ufs->cleanup_queue->total].cmd; ufs->cleanup_queue->total++);
-    for (ufs->partitions_length=0; ufs->partitions[ufs->partitions_length]; ufs->partitions_length++);
+    for (ufs->deploy_queue->total=0;
+         ufs->deploy_queue->tasks[ufs->deploy_queue->total].cmd;
+         ufs->deploy_queue->total++);
+
+    for (ufs->cleanup_queue->total=0;
+         ufs->cleanup_queue->tasks[ufs->cleanup_queue->total].cmd;
+         ufs->cleanup_queue->total++);
+
+    for (ufs->partitions_length=0;
+         ufs->partitions[ufs->partitions_length];
+         ufs->partitions_length++);
 
     SFMF_DEBUG("Deploy tasks: %d, cleanup tasks: %d, partitions: %d\n",
             ufs->deploy_queue->total, ufs->cleanup_queue->total, ufs->partitions_length);
@@ -689,24 +691,24 @@ void upgrade_factory_snapshot_run(struct UpgradeFactorySnapshot *ufs)
 
 void upgrade_factory_snapshot_quit(struct UpgradeFactorySnapshot *ufs)
 {
-    g_main_loop_unref(ufs->mainloop);
+    g_main_loop_unref(ufs->mainloop), ufs->mainloop = NULL;
 
     if (ufs->object_registration) {
-        g_dbus_connection_unregister_object(ufs->system_bus, ufs->object_registration);
+        g_dbus_connection_unregister_object(ufs->system_bus, ufs->object_registration), ufs->object_registration = 0;
     }
 
     g_bus_unown_name(ufs->own_name);
 
     if (ufs->system_bus) {
-        g_object_unref(ufs->system_bus);
+        g_object_unref(ufs->system_bus), ufs->system_bus = NULL;
     }
 
     if (ufs->status.partition) {
-        g_free(ufs->status.partition);
+        g_free(ufs->status.partition), ufs->status.partition = NULL;
     }
 
     if (ufs->status.message) {
-        g_free(ufs->status.message);
+        g_free(ufs->status.message), ufs->status.message = NULL;
     }
 }
 

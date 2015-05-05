@@ -51,8 +51,7 @@ static void sfmf_control_bus_acquired_cb(GDBusConnection *connection, const gcha
     struct SFMF_Control_Private *priv = user_data;
 
     SFMF_DEBUG("Bus acquired with name '%s'\n", name);
-    g_object_ref(connection);
-    priv->connection = connection;
+    priv->connection = g_object_ref(connection);
 }
 
 static void sfmf_control_name_acquired_cb(GDBusConnection *connection, const gchar *name, gpointer user_data)
@@ -82,9 +81,9 @@ static void sfmf_control_method_call_cb(GDBusConnection *connection, const gchar
 {
     struct SFMF_Control_Private *priv = user_data;
 
-    if (g_strcmp0(object_path, SFMF_DBUS_PATH) == 0 &&
-            g_strcmp0(interface_name, SFMF_DBUS_INTERFACE) == 0 &&
-            sfmf_dbus_is_privileged(connection, sender)) {
+    if ((g_strcmp0(object_path, SFMF_DBUS_PATH) == 0 &&
+         g_strcmp0(interface_name, SFMF_DBUS_INTERFACE) == 0 &&
+         sfmf_dbus_is_privileged(connection, sender))) {
         if (g_strcmp0(method_name, "Abort") == 0) {
             gboolean result = FALSE;
             if (priv->callbacks && priv->callbacks->abort) {
@@ -92,7 +91,9 @@ static void sfmf_control_method_call_cb(GDBusConnection *connection, const gchar
             }
             g_dbus_method_invocation_return_value(invocation, g_variant_new("(b)", result));
             return;
-        } else if (g_strcmp0(method_name, "GetProgress") == 0) {
+        }
+
+        if (g_strcmp0(method_name, "GetProgress") == 0) {
             g_dbus_method_invocation_return_value(invocation,
                     g_variant_new("(sis)", g.progress.target ?: "", g.progress.progress,
                         g.progress.phase ?: ""));
@@ -148,11 +149,11 @@ void sfmf_control_init(struct SFMF_Control_Callbacks *callbacks, void *user_data
     if (!node_info) {
         SFMF_FAIL("Could not compile D-Bus XML: %s\n", error->message);
         g_error_free(error);
+    } else {
+        g.object_registration = g_dbus_connection_register_object(g.connection, "/",
+                g_dbus_node_info_lookup_interface(node_info, SFMF_DBUS_INTERFACE),
+                &sfmf_control_vtable, &g, NULL, &error);
     }
-
-    g.object_registration = g_dbus_connection_register_object(g.connection, "/",
-            g_dbus_node_info_lookup_interface(node_info, SFMF_DBUS_INTERFACE),
-            &sfmf_control_vtable, &g, NULL, &error);
 
     if (!g.object_registration) {
         SFMF_FAIL("Could not register object on D-Bus: %s\n", error->message);
@@ -174,7 +175,7 @@ void sfmf_control_set_progress(const char *target, int progress, const char *pha
     GError *error = NULL;
 
     if (g.progress.target) {
-        g_free(g.progress.target);
+        g_free(g.progress.target), g.progress.target = NULL;
     }
     if (target) {
         g.progress.target = g_strdup(target);
@@ -183,7 +184,7 @@ void sfmf_control_set_progress(const char *target, int progress, const char *pha
     g.progress.progress = progress;
 
     if (phase && g.progress.phase) {
-        g_free(g.progress.phase);
+        g_free(g.progress.phase), g.progress.phase = NULL;
     }
     if (phase) {
         g.progress.phase = g_strdup(phase);

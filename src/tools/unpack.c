@@ -947,11 +947,14 @@ static void draw_progress(struct UnpackOptions *opts, int i, const char *message
 {
     static float last_progress = -1.f;
 
+    // i == -1 means "starting" (0%), i == -2 means "finished" (100%)
+    // (this value also controls whether a newline or carriage return
+    // is printed, for on-screen progress updates)
     float partial = (opts->header.entries_length && i >= 0)
-        ? fminf(1.f, (float)(i) / (float)(opts->header.entries_length))
+        ? fminf(1.f, i / (float)opts->header.entries_length)
         : (i == -1 ? 0.f : 1.f);
 
-    float progress = fminf(1.f, ((float)(opts->steps.current) + partial) / (float)(opts->steps.total));
+    float progress = fminf(1.f, (opts->steps.current + partial) / (float)opts->steps.total);
 
     if (i >= 0 && progress - last_progress < 0.005f) {
         // Avoid excessive status updates
