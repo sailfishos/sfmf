@@ -2,7 +2,7 @@
 %define version_info %{version}-%{release}
 
 Name:          sfmf
-Version:       0.0.7
+Version:       0.0.9
 Release:       1
 Summary:       %{package_summary} (metapackage)
 Group:         System/Base

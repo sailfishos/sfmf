@@ -1,3 +1,9 @@
+sfmf (0.0.9) unstable; urgency=medium
+
+  * [deploy] D-Bus support
+
+ -- Thomas Perl <m@thp.io>  Thu, 07 May 2015 13:14:55 +0200
+
 sfmf (0.0.7) unstable; urgency=medium
 
   * [upgrade] Remove old factory snapshot if needed
