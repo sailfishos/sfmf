@@ -4,8 +4,12 @@ VERSION ?= git
 
 CFLAGS += -std=gnu99 -Isrc/common -Isrc/external -Wall -DVERSION=\"$(VERSION)\"
 
-# Prefer the static library
-LIBS += -l:libz.a -lm
+# zlib and math
+LIBS += -lz -lm
+
+# gio for D-Bus access
+CFLAGS += $(shell pkg-config --cflags glib-2.0 gio-2.0)
+LIBS += $(shell pkg-config --libs glib-2.0 gio-2.0)
 
 ifeq ($(USE_LIBCURL),1)
     CFLAGS += -DUSE_LIBCURL
@@ -38,8 +42,10 @@ sfmf-%: src/tools/%.o $(STATIC_LIB)
 	$(CC) -o $@ $^ $(LIBS) $(LIBS_$@)
 
 install: $(TOOLS)
-	install -d $(DESTDIR)$(PREFIX)/bin
+	install -d $(DESTDIR)$(PREFIX)/bin $(DESTDIR)/etc/dbus-1/system.d $(DESTDIR)$(PREFIX)/share/dbus-1/system-services/
 	install -m755 $(TOOLS) $(SCRIPTS) $(DESTDIR)$(PREFIX)/bin/
+	install -m644 dbus/org.sailfishos.slipstream.conf $(DESTDIR)/etc/dbus-1/system.d/
+	install -m644 dbus/org.sailfishos.slipstream.upgrade.service $(DESTDIR)$(PREFIX)/share/dbus-1/system-services/
 
 clean:
 	rm -f $(TOOLS) $(STATIC_LIB) $(COMMON_OBJ) $(TOOLS_OBJ)

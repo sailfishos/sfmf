@@ -17,19 +17,17 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  **/
 
-#ifndef SFMF_LOGGING_H
-#define SFMF_LOGGING_H
+#ifndef SFMF_CONTROL_H
+#define SFMF_CONTROL_H
 
-#include <stdio.h>
+struct SFMF_Control_Callbacks {
+    // Can be called by the client to abort the current operation
+    int (*abort)(void *user_data);
+};
 
-#include "policy.h"
+void sfmf_control_init(struct SFMF_Control_Callbacks *callbacks, void *user_data); // registers on the bus, exits if that fails
+void sfmf_control_process();
+void sfmf_control_set_progress(const char *target, int progress, const char *phase); // sends out a progress signal on the bus
+void sfmf_control_close(); // deregisters on the bus
 
-long logging_get_ticks();
-
-#define SFMF_LOG(fmt, ...) fprintf(stderr, "[%6ld] " fmt, logging_get_ticks(), ##__VA_ARGS__)
-#define SFMF_WARN(fmt, ...) fprintf(stderr, "[%6ld] [WARN] " fmt, logging_get_ticks(), ##__VA_ARGS__)
-#define SFMF_DEBUG(fmt, ...) if (sfmf_policy_get_log_debug()) fprintf(stderr, "[%6ld] [DEBUG] " fmt, logging_get_ticks(), ##__VA_ARGS__)
-
-#define SFMF_FAIL_AND_EXIT(fmt, ...) do { fprintf(stderr, "[%6ld] [ERROR] " fmt, logging_get_ticks(), ##__VA_ARGS__); exit(1); } while(0)
-
-#endif /* SFMF_LOGGING_H */
+#endif /* SFMF_CONTROL_H */
